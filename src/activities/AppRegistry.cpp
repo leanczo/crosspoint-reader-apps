@@ -4,6 +4,7 @@
 #include "activities/dice/DiceActivity.h"
 #include "activities/duckduckgo/DuckDuckGoActivity.h"
 #include "activities/formulaone/FormulaOneActivity.h"
+#include "activities/home/AppFolderActivity.h"
 #include "activities/rss/RssActivity.h"
 #include "activities/sudoku/SudokuActivity.h"
 #include "activities/tictactoe/TicTacToeActivity.h"
@@ -67,70 +68,108 @@ AppRegistry::AppRegistry() {
         return std::make_unique<SettingsActivity>(r, i);
       }));
 
+  // Games folder
+  apps.push_back(std::make_unique<App>(
+      []() { return tr(STR_FOLDER_GAMES); }, UIIcon::Chess,
+      [](GfxRenderer &r, MappedInputManager &i) {
+        return std::make_unique<AppFolderActivity>(r, i, AppCategory::Games);
+      }));
+
+  // Entertainment folder
+  apps.push_back(std::make_unique<App>(
+      []() { return tr(STR_FOLDER_ENTERTAINMENT); }, UIIcon::Wikipedia,
+      [](GfxRenderer &r, MappedInputManager &i) {
+        return std::make_unique<AppFolderActivity>(r, i, AppCategory::Entertainment);
+      }));
+
+  // Tools folder
+  apps.push_back(std::make_unique<App>(
+      []() { return tr(STR_FOLDER_TOOLS); }, UIIcon::Calculator,
+      [](GfxRenderer &r, MappedInputManager &i) {
+        return std::make_unique<AppFolderActivity>(r, i, AppCategory::Tools);
+      }));
+
+  // --- Games ---
+
+  // Chess App
+  gamesApps.push_back(std::make_unique<App>(
+      []() { return tr(STR_CHESS_TITLE); }, UIIcon::Chess, [](GfxRenderer &r, MappedInputManager &i) {
+        return std::make_unique<ChessActivity>(r, i);
+      }));
+
+  // Sudoku App
+  gamesApps.push_back(std::make_unique<App>(
+      []() { return tr(STR_SUDOKU_TITLE); }, UIIcon::Sudoku, [](GfxRenderer &r, MappedInputManager &i) {
+        return std::make_unique<SudokuActivity>(r, i);
+      }));
+
+  // Dice App
+  gamesApps.push_back(std::make_unique<App>(
+      []() { return tr(STR_DICE_TITLE); }, UIIcon::Dice, [](GfxRenderer &r, MappedInputManager &i) {
+        return std::make_unique<DiceActivity>(r, i);
+      }));
+
+  // Tic-Tac-Toe App
+  gamesApps.push_back(std::make_unique<App>(
+      []() { return tr(STR_TICTACTOE_TITLE); }, UIIcon::TicTacToe,
+      [](GfxRenderer &r, MappedInputManager &i) {
+        return std::make_unique<TicTacToeActivity>(r, i);
+      }));
+
+  // --- Entertainment ---
+
+  // Wikipedia App
+  entertainmentApps.push_back(
+      std::make_unique<App>([]() { return tr(STR_WIKIPEDIA_TITLE); }, UIIcon::Wikipedia,
+                            [](GfxRenderer &r, MappedInputManager &i) {
+                              return std::make_unique<WikipediaActivity>(r, i);
+                            }));
+
+  // RSS Feed App
+  entertainmentApps.push_back(std::make_unique<App>(
+      []() { return tr(STR_RSS_TITLE); }, UIIcon::Rss, [](GfxRenderer &r, MappedInputManager &i) {
+        return std::make_unique<RssActivity>(r, i);
+      }));
+
+  // Formula 1 App
+  entertainmentApps.push_back(std::make_unique<App>(
+      []() { return tr(STR_F1_TITLE); }, UIIcon::FormulaOne,
+      [](GfxRenderer &r, MappedInputManager &i) {
+        return std::make_unique<FormulaOneActivity>(r, i);
+      }));
+
+  // --- Tools ---
+
   // Calculator App
-  apps.push_back(
-      std::make_unique<App>("Calculator", UIIcon::Calculator,
+  toolsApps.push_back(
+      std::make_unique<App>([]() { return tr(STR_CALCULATOR_TITLE); }, UIIcon::Calculator,
                             [](GfxRenderer &r, MappedInputManager &i) {
                               return std::make_unique<CalculatorActivity>(r, i);
                             }));
 
   // Weather App
-  apps.push_back(std::make_unique<App>(
+  toolsApps.push_back(std::make_unique<App>(
       []() { return tr(STR_WEATHER_TITLE); }, UIIcon::Weather,
       [](GfxRenderer &r, MappedInputManager &i) {
         return std::make_unique<WeatherActivity>(r, i);
       }));
 
   // DuckDuckGo App
-  apps.push_back(
-      std::make_unique<App>("DuckDuckGo", UIIcon::DuckDuckGo,
+  toolsApps.push_back(
+      std::make_unique<App>([]() { return tr(STR_DUCKDUCKGO_TITLE); }, UIIcon::DuckDuckGo,
                             [](GfxRenderer &r, MappedInputManager &i) {
                               return std::make_unique<DuckDuckGoActivity>(r, i);
                             }));
+}
 
-  // Wikipedia App
-  apps.push_back(
-      std::make_unique<App>("Wikipedia", UIIcon::Wikipedia,
-                            [](GfxRenderer &r, MappedInputManager &i) {
-                              return std::make_unique<WikipediaActivity>(r, i);
-                            }));
-
-  // RSS Feed App
-  apps.push_back(std::make_unique<App>(
-      "RSS Feed", UIIcon::Rss, [](GfxRenderer &r, MappedInputManager &i) {
-        return std::make_unique<RssActivity>(r, i);
-      }));
-
-
-  // Chess App
-  apps.push_back(std::make_unique<App>(
-      "Chess", UIIcon::Chess, [](GfxRenderer &r, MappedInputManager &i) {
-        return std::make_unique<ChessActivity>(r, i);
-      }));
-
-  // Sudoku App
-  apps.push_back(std::make_unique<App>(
-      "Sudoku", UIIcon::Sudoku, [](GfxRenderer &r, MappedInputManager &i) {
-        return std::make_unique<SudokuActivity>(r, i);
-      }));
-
-  // Dice App
-  apps.push_back(std::make_unique<App>(
-      "Dice", UIIcon::Dice, [](GfxRenderer &r, MappedInputManager &i) {
-        return std::make_unique<DiceActivity>(r, i);
-      }));
-
-  // Tic-Tac-Toe App
-  apps.push_back(std::make_unique<App>(
-      []() { return tr(STR_TICTACTOE_TITLE); }, UIIcon::TicTacToe,
-      [](GfxRenderer &r, MappedInputManager &i) {
-        return std::make_unique<TicTacToeActivity>(r, i);
-      }));
-
-  // Formula 1 App
-  apps.push_back(std::make_unique<App>(
-      []() { return tr(STR_F1_TITLE); }, UIIcon::FormulaOne,
-      [](GfxRenderer &r, MappedInputManager &i) {
-        return std::make_unique<FormulaOneActivity>(r, i);
-      }));
+const std::vector<std::unique_ptr<App>> &AppRegistry::getCategoryApps(AppCategory category) const {
+  switch (category) {
+    case AppCategory::Games:
+      return gamesApps;
+    case AppCategory::Entertainment:
+      return entertainmentApps;
+    case AppCategory::Tools:
+      return toolsApps;
+  }
+  return gamesApps;
 }
