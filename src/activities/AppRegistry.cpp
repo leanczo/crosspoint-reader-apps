@@ -3,6 +3,7 @@
 #include "activities/chess/ChessActivity.h"
 #include "activities/dice/DiceActivity.h"
 #include "activities/duckduckgo/DuckDuckGoActivity.h"
+#include "activities/formulaone/FormulaOneActivity.h"
 #include "activities/rss/RssActivity.h"
 #include "activities/sudoku/SudokuActivity.h"
 #include "activities/tictactoe/TicTacToeActivity.h"
@@ -75,7 +76,8 @@ AppRegistry::AppRegistry() {
 
   // Weather App
   apps.push_back(std::make_unique<App>(
-      "Weather", UIIcon::Weather, [](GfxRenderer &r, MappedInputManager &i) {
+      []() { return tr(STR_WEATHER_TITLE); }, UIIcon::Weather,
+      [](GfxRenderer &r, MappedInputManager &i) {
         return std::make_unique<WeatherActivity>(r, i);
       }));
 
@@ -123,5 +125,12 @@ AppRegistry::AppRegistry() {
       []() { return tr(STR_TICTACTOE_TITLE); }, UIIcon::TicTacToe,
       [](GfxRenderer &r, MappedInputManager &i) {
         return std::make_unique<TicTacToeActivity>(r, i);
+      }));
+
+  // Formula 1 App
+  apps.push_back(std::make_unique<App>(
+      []() { return tr(STR_F1_TITLE); }, UIIcon::FormulaOne,
+      [](GfxRenderer &r, MappedInputManager &i) {
+        return std::make_unique<FormulaOneActivity>(r, i);
       }));
 }

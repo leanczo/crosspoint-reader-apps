@@ -46,6 +46,8 @@
 #include "components/icons/rss24.h"
 #include "components/icons/tictactoe.h"
 #include "components/icons/tictactoe24.h"
+#include "components/icons/formulaone.h"
+#include "components/icons/formulaone24.h"
 #include "fontIds.h"
 
 
@@ -93,6 +95,8 @@ const uint8_t* iconForName(UIIcon icon, int size) {
         return Rss24Icon;
       case UIIcon::TicTacToe:
         return Tictactoe24Icon;
+      case UIIcon::FormulaOne:
+        return Formulaone24Icon;
       default:
         return nullptr;
     }
@@ -134,6 +138,8 @@ const uint8_t* iconForName(UIIcon icon, int size) {
         return RssIcon;
       case UIIcon::TicTacToe:
         return TictactoeIcon;
+      case UIIcon::FormulaOne:
+        return FormulaoneIcon;
       default:
         return nullptr;
     }

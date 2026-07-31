@@ -745,6 +745,9 @@ void RssActivity::loadSubscriptions() {
     subscriptions.push_back(
         "https://rss.nytimes.com/services/xml/rss/nyt/DiningandWine.xml");
     subscriptions.push_back("https://finance.yahoo.com/news/rssindex");
+    subscriptions.push_back("https://www.eltribuno.com/rss-new/portada.rss");
+    subscriptions.push_back("https://psicologiaymente.net/feeds/blog/rss");
+    subscriptions.push_back("https://rinconpsicologia.com/feed/");
 
     saveSubscriptions();
     return;

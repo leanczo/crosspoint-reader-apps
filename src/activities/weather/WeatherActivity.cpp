@@ -309,38 +309,38 @@ const int CITY_COUNT = sizeof(CITIES) / sizeof(CITIES[0]);
 const char *getWeatherDesc(int code) {
   switch (code) {
   case 0:
-    return "Clear sky";
+    return tr(STR_WEATHER_CLEAR_SKY);
   case 1:
-    return "Mainly clear";
+    return tr(STR_WEATHER_MAINLY_CLEAR);
   case 2:
-    return "Partly cloudy";
+    return tr(STR_WEATHER_PARTLY_CLOUDY);
   case 3:
-    return "Overcast";
+    return tr(STR_WEATHER_OVERCAST);
   case 45:
   case 48:
-    return "Foggy";
+    return tr(STR_WEATHER_FOGGY);
   case 51:
   case 53:
   case 55:
-    return "Drizzle";
+    return tr(STR_WEATHER_DRIZZLE);
   case 61:
   case 63:
   case 65:
-    return "Rainy";
+    return tr(STR_WEATHER_RAINY);
   case 71:
   case 73:
   case 75:
-    return "Snowy";
+    return tr(STR_WEATHER_SNOWY);
   case 80:
   case 81:
   case 82:
-    return "Rain showers";
+    return tr(STR_WEATHER_RAIN_SHOWERS);
   case 95:
   case 96:
   case 99:
-    return "Thunderstorm";
+    return tr(STR_WEATHER_THUNDERSTORM);
   default:
-    return "Unknown";
+    return tr(STR_WEATHER_UNKNOWN);
   }
 }
 
@@ -617,7 +617,7 @@ void WeatherActivity::onEnter() {
       }
     } else {
       weatherLoaded = false;
-      errorMessage = "No cached weather data. Fetching...";
+      errorMessage = tr(STR_WEATHER_NO_CACHE_FETCHING);
       state = WeatherState::Loading;
       requestUpdate();
       ensureWifiConnected([this]() {
@@ -672,7 +672,7 @@ void WeatherActivity::loop() {
       requestUpdate();
     } else {
       if (!weatherLoaded) {
-        errorMessage = "No network & no cached data.";
+        errorMessage = tr(STR_WEATHER_NO_NETWORK_NO_CACHE);
         if (state == WeatherState::Loading) {
           state = WeatherState::ShowWeather;
         }
@@ -705,7 +705,7 @@ void WeatherActivity::loop() {
         }
       } else {
         weatherLoaded = false;
-        errorMessage = "No cached weather data. Fetching...";
+        errorMessage = tr(STR_WEATHER_NO_CACHE_FETCHING);
         state = WeatherState::Loading;
         requestUpdate();
         ensureWifiConnected([this]() {
@@ -750,7 +750,7 @@ void WeatherActivity::render(RenderLock &&) {
   if (state == WeatherState::SelectCity) {
     GUI.drawHeader(renderer,
                    Rect{0, metrics.topPadding, pageWidth, metrics.headerHeight},
-                   "Select City");
+                   tr(STR_WEATHER_SELECT_CITY));
 
     GUI.drawButtonMenu(
         renderer,
@@ -772,7 +772,7 @@ void WeatherActivity::render(RenderLock &&) {
   } else if (state == WeatherState::Loading) {
     GUI.drawHeader(renderer,
                    Rect{0, metrics.topPadding, pageWidth, metrics.headerHeight},
-                   "Weather");
+                   tr(STR_WEATHER_TITLE));
 
     const int contentTop =
         metrics.topPadding + metrics.headerHeight + metrics.verticalSpacing;
@@ -782,7 +782,7 @@ void WeatherActivity::render(RenderLock &&) {
 
     int textY = contentTop + contentHeight / 2 -
                 renderer.getLineHeight(UI_12_FONT_ID) / 2;
-    renderer.drawCenteredText(UI_12_FONT_ID, textY, "Loading weather...");
+    renderer.drawCenteredText(UI_12_FONT_ID, textY, tr(STR_WEATHER_LOADING));
 
     const auto labels =
         mappedInput.mapLabels(tr(STR_BACK), nullptr, nullptr, nullptr);
@@ -791,7 +791,7 @@ void WeatherActivity::render(RenderLock &&) {
   } else if (state == WeatherState::ShowWeather) {
     GUI.drawHeader(renderer,
                    Rect{0, metrics.topPadding, pageWidth, metrics.headerHeight},
-                   "Weather");
+                   tr(STR_WEATHER_TITLE));
 
     const int contentTop =
         metrics.topPadding + metrics.headerHeight + metrics.verticalSpacing;
@@ -829,21 +829,21 @@ void WeatherActivity::render(RenderLock &&) {
       // Wind Speed
       char windBuf[64];
       double windspeedMph = windspeed * 0.621371;
-      snprintf(windBuf, sizeof(windBuf), "Wind: %.1f km/h / %.1f mph", windspeed, windspeedMph);
+      snprintf(windBuf, sizeof(windBuf), tr(STR_WEATHER_WIND_FORMAT), windspeed, windspeedMph);
       renderer.drawCenteredText(NOTOSANS_12_FONT_ID, cardY + 275, windBuf, true,
                                 EpdFontFamily::REGULAR);
 
       // Updated Time
       char timeBuf[64];
       if (fetchTaskHandle != nullptr) {
-        snprintf(timeBuf, sizeof(timeBuf), "Refreshing...");
+        snprintf(timeBuf, sizeof(timeBuf), "%s", tr(STR_WEATHER_REFRESHING));
       } else {
         std::string formattedTime = timeStr;
         size_t tPos = formattedTime.find('T');
         if (tPos != std::string::npos) {
           formattedTime[tPos] = ' ';
         }
-        snprintf(timeBuf, sizeof(timeBuf), "Updated: %s", formattedTime.c_str());
+        snprintf(timeBuf, sizeof(timeBuf), tr(STR_WEATHER_UPDATED_FORMAT), formattedTime.c_str());
       }
       renderer.drawCenteredText(SMALL_FONT_ID, cardY + 315, timeBuf, true,
                                 EpdFontFamily::REGULAR);
@@ -854,8 +854,8 @@ void WeatherActivity::render(RenderLock &&) {
                                 true, EpdFontFamily::BOLD);
     }
 
-    const auto labels = mappedInput.mapLabels(tr(STR_BACK), "Refresh",
-                                              "City", nullptr);
+    const auto labels = mappedInput.mapLabels(tr(STR_BACK), tr(STR_WEATHER_REFRESH),
+                                              tr(STR_WEATHER_CITY), nullptr);
     GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3,
                         labels.btn4);
   }
