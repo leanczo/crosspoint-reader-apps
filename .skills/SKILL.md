@@ -511,6 +511,24 @@ pio run -t uploadfs
 * Use PlatformIO toolbar: Build (✓), Upload (→), Clean (🗑️)
 * Or Command Palette: `PlatformIO: Build`, `PlatformIO: Upload`, etc.
 
+### Host-Side Unit Tests (gtest)
+
+Suites under `test/` (e.g. `streaming_json_parser`, `release_json_parser`, `differential_rounding`, `hyphenation_eval`) build and run on the host — not on ESP32-C3 target — via CMake/CTest, with Google Test fetched automatically on first configure.
+
+```bash
+# Via the registered PlatformIO target (builds + runs all suites)
+pio run -t unit-tests
+
+# Or directly with CMake/CTest
+cmake -S test -B build/test
+cmake --build build/test
+ctest --test-dir build/test --output-on-failure -j
+
+# Run a single suite directly
+cmake --build build/test --target StreamingJsonParserTest
+build/test/streaming_json_parser/StreamingJsonParserTest --gtest_filter='*'
+```
+
 ### Monitoring and Debugging
 
 ```bash

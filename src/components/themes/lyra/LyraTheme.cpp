@@ -44,6 +44,8 @@
 #include "components/icons/dice24.h"
 #include "components/icons/rss.h"
 #include "components/icons/rss24.h"
+#include "components/icons/tictactoe.h"
+#include "components/icons/tictactoe24.h"
 #include "fontIds.h"
 
 
@@ -89,6 +91,8 @@ const uint8_t* iconForName(UIIcon icon, int size) {
         return DuckDuckGo24Icon;
       case UIIcon::Rss:
         return Rss24Icon;
+      case UIIcon::TicTacToe:
+        return Tictactoe24Icon;
       default:
         return nullptr;
     }
@@ -128,6 +132,8 @@ const uint8_t* iconForName(UIIcon icon, int size) {
         return DuckDuckGoIcon;
       case UIIcon::Rss:
         return RssIcon;
+      case UIIcon::TicTacToe:
+        return TictactoeIcon;
       default:
         return nullptr;
     }
