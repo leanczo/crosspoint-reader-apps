@@ -350,7 +350,8 @@ void SettingsActivity::render(RenderLock&&) {
                                 ? I18N.get(categoryNames[(selectedCategoryIndex + 1) % categoryCount])
                                 : tr(STR_TOGGLE);
   const auto labels = mappedInput.mapLabels(tr(STR_BACK), confirmLabel, tr(STR_DIR_UP), tr(STR_DIR_DOWN));
-  GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
+  GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4, ButtonArrow::Up,
+                      ButtonArrow::Down);
 
   // Always use standard refresh for settings screen
   renderer.displayBuffer();

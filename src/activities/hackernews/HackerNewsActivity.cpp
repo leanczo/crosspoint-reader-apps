@@ -30,6 +30,12 @@ namespace {
 constexpr int kMaxCommentDepth = 6;
 constexpr int kMaxComments = 200;
 
+// Short per-attempt timeout for these small JSON list fetches (paired with the
+// existing 3x retry loop in runBackgroundFetch()), so a stalled request is
+// noticed well within cancelFetchTask()'s cooperative-cancel wait window
+// instead of forcing a vTaskDelete() on a task that may hold the storage mutex.
+constexpr uint32_t kListFetchTimeoutMs = 8000;
+
 std::string sanitizeTitleForFilename(const std::string& input) {
   std::string output;
   for (char c : input) {
@@ -147,18 +153,41 @@ void HackerNewsActivity::appendDebugLog(const std::string& line) {
   Storage.writeFile("/apps/hackernews/debug.log", entry);
 }
 
+// Cooperative cancel + bounded wait, same pattern FootballActivity/FormulaOneActivity
+// use: ask the task to stop (cancelFetch), give it up to 10s to unwind through
+// its own esp_http_client/SD-file cleanup, and only fall back to a raw
+// vTaskDelete() (which skips that cleanup and can leak the socket/TLS session,
+// or leave HalStorage's mutex locked if killed mid-write) if it's genuinely stuck.
 void HackerNewsActivity::cancelFetchTask() {
   if (fetchTaskHandle != nullptr) {
-    TaskHandle_t tempHandle = static_cast<TaskHandle_t>(fetchTaskHandle);
-    fetchTaskHandle = nullptr;
-    vTaskDelete(tempHandle);
+    cancelFetch = true;
+    int waitCount = 0;
+    // Bound exceeds kListFetchTimeoutMs (8s) so the cooperative cancel is
+    // reliably observed inside a blocked esp_http_client_read() before we'd
+    // ever consider the vTaskDelete() fallback below.
+    while (fetchTaskHandle != nullptr && waitCount < 1000) {
+      delay(10);
+      waitCount++;
+    }
+    if (fetchTaskHandle != nullptr) {
+      LOG_ERR("HN", "Task failed to exit gracefully, forcing vTaskDelete!");
+      appendDebugLog("Task failed to exit gracefully, forcing vTaskDelete!");
+      TaskHandle_t tempHandle = static_cast<TaskHandle_t>(fetchTaskHandle);
+      fetchTaskHandle = nullptr;
+      vTaskDelete(tempHandle);
+    }
   }
   pendingUpdate = false;
 }
 
 void HackerNewsActivity::startFetch(int tab) {
-  if (fetchTaskHandle != nullptr) return;
+  // Cancel (and fully wait out) any previous fetch BEFORE switching
+  // fetchingTab to the new tab — runBackgroundFetch() reads fetchingTab live
+  // on every retry, so flipping it while an old task might still be mid-retry
+  // would make that old task fetch/save into the new tab's paths instead.
+  cancelFetchTask();
   fetchingTab = tab;
+  cancelFetch = false;
   Storage.ensureDirectoryExists("/apps");
   Storage.ensureDirectoryExists("/apps/hackernews");
   ensureWifiConnected(
@@ -182,10 +211,11 @@ void HackerNewsActivity::runBackgroundFetch() {
 
   bool success = false;
   int retries = 3;
-  while (retries > 0 && !DownloadWatchdog::gotTimeout) {
+  while (retries > 0 && !DownloadWatchdog::gotTimeout && !cancelFetch) {
     std::string errDetail;
-    const auto result = HttpDownloader::downloadToFile(apiUrl(fetchingTab), tmpPath(fetchingTab), nullptr, nullptr,
-                                                        "", "", nullptr, nullptr, &errDetail);
+    const auto result = HttpDownloader::downloadToFile(apiUrl(fetchingTab), tmpPath(fetchingTab), nullptr,
+                                                        &cancelFetch, "", "", nullptr, nullptr, &errDetail,
+                                                        kListFetchTimeoutMs);
     if (result == HttpDownloader::OK) {
       success = true;
       break;
@@ -193,12 +223,28 @@ void HackerNewsActivity::runBackgroundFetch() {
     retries--;
     appendDebugLog("List download failed for tab " + std::to_string(fetchingTab) + " (" + errDetail + "), " +
                    std::to_string(retries) + " retries left");
-    if (retries > 0 && !DownloadWatchdog::gotTimeout) delay(1000);
+    if (retries > 0 && !DownloadWatchdog::gotTimeout && !cancelFetch) delay(1000);
   }
 
   DownloadWatchdog::stop();
   if (DownloadWatchdog::gotTimeout) success = false;
 
+  // Cancelled (cancelFetchTask() is waiting on fetchTaskHandle below): clear
+  // it ourselves from inside the task, right before it ends, instead of
+  // reporting a result nobody asked for anymore.
+  if (cancelFetch) {
+    fetchTaskHandle = nullptr;
+    return;
+  }
+
+  // Also clear it here on the success/failure path, before this task
+  // self-deletes (see hnFetchTaskFunc). Otherwise, if the user switches tabs
+  // before loop() gets around to processing pendingUpdate, cancelFetchTask()
+  // finds a handle that looks "live" but whose task has already gone away,
+  // spin-waits it out, and forces a vTaskDelete() on a stale handle that
+  // FreeRTOS may have since recycled for the next tab's fetch task — killing
+  // an unrelated in-flight fetch and leaving that tab stuck.
+  fetchTaskHandle = nullptr;
   backgroundFetchSuccess = success;
   pendingUpdate = true;
 }
@@ -259,6 +305,15 @@ void HackerNewsActivity::parseAndStoreList(int tab, HalFile& file) {
   if (newStories.empty()) {
     errorMessage[tab] = tr(STR_HN_NO_DATA);
     return;
+  }
+
+  // Top ("Populares") is the one tab meant to read as a points ranking; the
+  // Algolia API only returns it in front-page relevance order. New/Ask/Show
+  // are already requested sorted by date (search_by_date), which is the
+  // right order for them, so leave those alone.
+  if (tab == static_cast<int>(HNTab::Top)) {
+    std::stable_sort(newStories.begin(), newStories.end(),
+                     [](const HNStory& a, const HNStory& b) { return a.points > b.points; });
   }
 
   stories[tab] = std::move(newStories);
@@ -635,7 +690,8 @@ void HackerNewsActivity::render(RenderLock&&) {
     }
 
     const auto labels = mappedInput.mapLabels(tr(STR_BACK), tr(STR_SELECT), tr(STR_DIR_LEFT), tr(STR_DIR_RIGHT));
-    GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
+    GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4, ButtonArrow::Left,
+                        ButtonArrow::Right);
   }
 
   renderer.displayBuffer();

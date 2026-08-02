@@ -21,6 +21,19 @@ struct FootballRow {
   std::string value;
 };
 
+// Results keeps the raw fields (not a pre-baked title string) so the row
+// renderer can lay the score out in its own centered box instead of just
+// concatenating "Home 1 - 4 Away" as plain text.
+struct FootballMatch {
+  std::string home;
+  std::string away;
+  std::string homeScore;
+  std::string awayScore;
+  std::string state;       // ESPN status.type.state: "pre" | "in" | "post"
+  std::string statusDesc;  // e.g. "Full Time", "Scheduled", "1st Half"
+  std::string dateIso;     // raw ESPN date; formatted (and timezone-shifted) at render time
+};
+
 // Standings are organized into zones/groups by ESPN (e.g. "Grupo A"/"Grupo B"
 // during a Libertadores group stage). Ungrouped leagues still come back as a
 // single group, so callers don't need to special-case the count.
@@ -42,8 +55,16 @@ class FootballActivity final : public Activity {
 
   bool loaded[2] = {false, false};
   std::string errorMessage[2];
+  // Shown as an overlay banner while startFetch() has an in-flight request
+  // for that tab, independent of `loaded[tab]` — otherwise a manual refresh
+  // of already-loaded data gives zero visual feedback while it's in flight.
+  bool refreshing[2] = {false, false};
+  // Set when a manual refresh fails while `loaded[tab]` was already true, so
+  // the old data stays on screen but the user still sees that it didn't
+  // update, instead of the refresh failing in total silence.
+  bool refreshFailed[2] = {false, false};
 
-  std::vector<FootballRow> resultsRows;
+  std::vector<FootballMatch> resultsMatches;
   int selectedResultsRow = 0;
 
   std::vector<FootballGroup> standingsGroups;
@@ -54,6 +75,12 @@ class FootballActivity final : public Activity {
   bool backgroundFetchSuccess = false;
   int fetchingTab = -1;
   void* fetchTaskHandle = nullptr;
+  // Cooperative cancellation for cancelFetchTask() — see its definition for
+  // why this replaced a bare vTaskDelete() (RssActivity.cpp has the same
+  // pattern already working; this mirrors it). Plain bool, not volatile,
+  // matching RssActivity.h — HttpDownloader::downloadToFile's cancelFlag
+  // parameter is `bool*`, and passing a `volatile bool*` there wouldn't compile.
+  bool cancelFetch = false;
 
   void loadSubscriptions();
   void saveSubscriptions();
@@ -67,6 +94,11 @@ class FootballActivity final : public Activity {
   std::string tmpPath(int tab) const;
   std::string apiUrl(int tab) const;
   static void appendDebugLog(const std::string& line);
+
+  // Hand-rolled row rendering for Results (team names + a centered
+  // score/kickoff-time box + a divider between matches) — GUI.drawList only
+  // does plain title/subtitle/value text, not a custom-laid-out row.
+  void drawResultsList(int x, int y, int width, int height);
 
  public:
   void runBackgroundFetch();  // called from the FreeRTOS task trampoline

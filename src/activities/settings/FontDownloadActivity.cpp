@@ -588,7 +588,8 @@ void FontDownloadActivity::render(RenderLock&&) {
                                                 : isUpdateAllRow(selectedIndex_) ? tr(STR_UPDATE)
                                                                                  : tr(STR_DOWNLOAD),
                                                 tr(STR_DIR_UP), tr(STR_DIR_DOWN));
-      GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
+      GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4, ButtonArrow::Up,
+                          ButtonArrow::Down);
     }
   } else if (state_ == DOWNLOADING) {
     const auto& family = families_[downloadingFamilyIndex_];

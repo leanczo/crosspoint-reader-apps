@@ -212,7 +212,8 @@ void TicTacToeActivity::render(RenderLock&&) {
   renderer.drawCenteredText(UI_12_FONT_ID, footerY, status, true, EpdFontFamily::BOLD);
 
   const auto labels = mappedInput.mapLabels(tr(STR_BACK), tr(STR_SELECT), tr(STR_DIR_LEFT), tr(STR_DIR_RIGHT));
-  GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
+  GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4, ButtonArrow::Left,
+                      ButtonArrow::Right);
 
   renderer.displayBuffer();
 }

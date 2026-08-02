@@ -13,6 +13,7 @@
 #include "SilentRestart.h"
 #include "activities/ActivityManager.h"
 #include "activities/network/WifiSelectionActivity.h"
+#include "activities/reader/QrDisplayActivity.h"
 #include "activities/reader/ReaderActivity.h"
 #include "activities/util/ConfirmationActivity.h"
 #include "activities/util/DownloadWatchdog.h"
@@ -25,12 +26,13 @@
 namespace {
 
 // Selectable font sizes for the article detail view, cycled with Left/Right.
-// Index 1 (14pt) is the default -- noticeably larger than the 8pt SMALL_FONT_ID
-// previously used for article bodies.
-constexpr int kRssArticleFontIds[] = {NOTOSANS_12_FONT_ID, NOTOSANS_14_FONT_ID, NOTOSANS_16_FONT_ID,
+// Default (index 0) is UI_10_FONT_ID -- the same font the feed listing uses
+// -- so opening an article doesn't visibly change the text size; Right steps
+// up through progressively larger NotoSans sizes for anyone who wants it.
+constexpr int kRssArticleFontIds[] = {UI_10_FONT_ID, NOTOSANS_12_FONT_ID, NOTOSANS_14_FONT_ID, NOTOSANS_16_FONT_ID,
                                       NOTOSANS_18_FONT_ID};
 constexpr size_t kRssArticleFontCount = sizeof(kRssArticleFontIds) / sizeof(kRssArticleFontIds[0]);
-constexpr uint8_t kRssDefaultArticleFontIndex = 1;
+constexpr uint8_t kRssDefaultArticleFontIndex = 0;
 
 size_t findCaseInsensitive(const std::string& str, const std::string& search, size_t pos = 0) {
   if (search.empty() || str.empty() || pos >= str.length()) return std::string::npos;
@@ -40,43 +42,64 @@ size_t findCaseInsensitive(const std::string& str, const std::string& search, si
   return std::distance(str.begin(), it);
 }
 
-std::string unescapeHtml(const std::string& input) {
-  std::string output = input;
-  size_t pos;
-  while ((pos = output.find("&amp;")) != std::string::npos) {
-    output.replace(pos, 5, "&");
-  }
-  while ((pos = output.find("&lt;")) != std::string::npos) {
-    output.replace(pos, 4, "<");
-  }
-  while ((pos = output.find("&gt;")) != std::string::npos) {
-    output.replace(pos, 4, ">");
-  }
-  while ((pos = output.find("&quot;")) != std::string::npos) {
-    output.replace(pos, 6, "\"");
-  }
-  while ((pos = output.find("&#39;")) != std::string::npos) {
-    output.replace(pos, 5, "'");
-  }
-  while ((pos = output.find("&apos;")) != std::string::npos) {
-    output.replace(pos, 6, "'");
-  }
-  return output;
-}
-
-std::string stripHtmlTags(const std::string& input) {
-  std::string output = "";
-  bool inTag = false;
-  for (char c : input) {
-    if (c == '<') {
-      inTag = true;
-    } else if (c == '>') {
-      inTag = false;
-    } else if (!inTag) {
-      output += c;
+// Decodes a numeric (&#NNN;) or hex (&#xNNN;) character reference, or one of
+// the common named entities listed below, into its UTF-8 byte sequence.
+// `name` is the entity body without the leading '&' or trailing ';' (e.g.
+// "amp", "#39", "#x2019"). Returns true and fills `outUtf8` on success.
+bool decodeHtmlEntity(const std::string& name, std::string& outUtf8) {
+  int code = 0;
+  bool decoded = false;
+  if (!name.empty() && name[0] == '#') {
+    decoded = true;
+    if (name.length() > 2 && (name[1] == 'x' || name[1] == 'X')) {
+      for (size_t k = 2; k < name.length(); k++) {
+        char ch = name[k];
+        if (ch >= '0' && ch <= '9') code = code * 16 + (ch - '0');
+        else if (ch >= 'a' && ch <= 'f') code = code * 16 + (ch - 'a' + 10);
+        else if (ch >= 'A' && ch <= 'F') code = code * 16 + (ch - 'A' + 10);
+      }
+    } else {
+      for (size_t k = 1; k < name.length(); k++) {
+        char ch = name[k];
+        if (ch >= '0' && ch <= '9') code = code * 10 + (ch - '0');
+      }
     }
+  } else if (name == "amp") { code = 38; decoded = true; }
+  else if (name == "lt") { code = 60; decoded = true; }
+  else if (name == "gt") { code = 62; decoded = true; }
+  else if (name == "quot") { code = 34; decoded = true; }
+  else if (name == "apos") { code = 39; decoded = true; }
+  else if (name == "nbsp") { code = 32; decoded = true; }
+  else if (name == "ldquo") { code = 8220; decoded = true; }
+  else if (name == "rdquo") { code = 8221; decoded = true; }
+  else if (name == "lsquo") { code = 8216; decoded = true; }
+  else if (name == "rsquo") { code = 8217; decoded = true; }
+  else if (name == "ndash") { code = 8211; decoded = true; }
+  else if (name == "mdash") { code = 8212; decoded = true; }
+  else if (name == "hellip") { code = 8230; decoded = true; }
+  else if (name == "euro") { code = 8364; decoded = true; }
+  else if (name == "copy") { code = 169; decoded = true; }
+  else if (name == "reg") { code = 174; decoded = true; }
+  else if (name == "trade") { code = 8482; decoded = true; }
+
+  if (!decoded || code <= 0) return false;
+
+  if (code <= 0x7F) {
+    outUtf8 += static_cast<char>(code);
+  } else if (code <= 0x7FF) {
+    outUtf8 += static_cast<char>(0xC0 | ((code >> 6) & 0x1F));
+    outUtf8 += static_cast<char>(0x80 | (code & 0x3F));
+  } else if (code <= 0xFFFF) {
+    outUtf8 += static_cast<char>(0xE0 | ((code >> 12) & 0x0F));
+    outUtf8 += static_cast<char>(0x80 | ((code >> 6) & 0x3F));
+    outUtf8 += static_cast<char>(0x80 | (code & 0x3F));
+  } else {
+    outUtf8 += static_cast<char>(0xF0 | ((code >> 18) & 0x07));
+    outUtf8 += static_cast<char>(0x80 | ((code >> 12) & 0x3F));
+    outUtf8 += static_cast<char>(0x80 | ((code >> 6) & 0x3F));
+    outUtf8 += static_cast<char>(0x80 | (code & 0x3F));
   }
-  return output;
+  return true;
 }
 
 std::string cleanField(const std::string& input) {
@@ -90,45 +113,45 @@ std::string cleanField(const std::string& input) {
   while (i < input.length()) {
     char c = input[i];
 
-    // Handle HTML entities
+    // Handle HTML entities: named (&amp; &nbsp; &rsquo; &mdash; ...), decimal
+    // (&#8217;) and hex (&#x2019;) character references, decoded straight to
+    // UTF-8. Entities this doesn't recognize are left as literal text below
+    // rather than silently dropped.
     if (c == '&') {
       std::string entity = "";
       size_t j = i;
-      while (j < input.length() && j - i < 8) {
+      while (j < input.length() && j - i < 10) {
         char ec = input[j];
         entity += ec;
         if (ec == ';') break;
         j++;
       }
 
-      char replacement = 0;
+      std::string replacement;
       size_t entityLen = 0;
-      if (entity == "&amp;") {
-        replacement = '&';
-        entityLen = 5;
-      } else if (entity == "&lt;") {
-        replacement = '<';
-        entityLen = 4;
-      } else if (entity == "&gt;") {
-        replacement = '>';
-        entityLen = 4;
-      } else if (entity == "&quot;") {
-        replacement = '"';
-        entityLen = 6;
-      } else if (entity == "&#39;") {
-        replacement = '\'';
-        entityLen = 5;
-      } else if (entity == "&apos;") {
-        replacement = '\'';
-        entityLen = 6;
+      if (entity.length() >= 3 && entity.back() == ';') {
+        const std::string name = entity.substr(1, entity.length() - 2);
+        if (decodeHtmlEntity(name, replacement)) {
+          entityLen = entity.length();
+        }
       }
 
-      if (replacement != 0) {
-        c = replacement;
+      if (!replacement.empty()) {
+        for (char rc : replacement) {
+          if (rc == ' ') {
+            if (!lastWasSpace) {
+              clean += ' ';
+              lastWasSpace = true;
+            }
+          } else {
+            clean += rc;
+            lastWasSpace = false;
+          }
+        }
         i += entityLen;
-      } else {
-        i++;
+        continue;
       }
+      i++;
     } else {
       i++;
     }
@@ -1129,6 +1152,14 @@ void RssActivity::downloadActivePost() {
   }
 }
 
+void RssActivity::showQrForActivePost() {
+  if (selectedItemIndex < 0 || selectedItemIndex >= static_cast<int>(allItems.size())) return;
+  const std::string url = allItems[selectedItemIndex].link;
+  if (url.empty()) return;
+  startActivityForResult(std::make_unique<QrDisplayActivity>(renderer, mappedInput, url),
+                         [this](const ActivityResult&) { requestUpdate(); });
+}
+
 void RssActivity::onEnter() {
   Activity::onEnter();
   ensureDirectoriesExist();
@@ -1432,14 +1463,19 @@ void RssActivity::loop() {
   } else if (state == RssState::PostDetail) {
     if (mappedInput.wasReleased(MappedInputManager::Button::Up)) {
       if (detailScrollOffset > 0) {
-        detailScrollOffset--;
+        detailScrollOffset = std::max(0, detailScrollOffset - detailMaxLines);
         requestUpdate();
       }
     } else if (mappedInput.wasReleased(MappedInputManager::Button::Down)) {
-      detailScrollOffset++;
+      // render() re-clamps this to the last valid page, so it's safe to
+      // overshoot here — a full-page jump instead of 1 line so the screen
+      // fully replaces instead of shifting by a single row each press.
+      detailScrollOffset += detailMaxLines;
       requestUpdate();
     } else if (mappedInput.wasReleased(MappedInputManager::Button::Confirm)) {
-      downloadActivePost();
+      postActionMenuIndex = 0;
+      state = RssState::PostActionMenu;
+      requestUpdate();
     } else if (mappedInput.wasReleased(MappedInputManager::Button::Left)) {
       if (articleFontSizeIndex > 0) {
         articleFontSizeIndex--;
@@ -1451,6 +1487,28 @@ void RssActivity::loop() {
         articleFontSizeIndex++;
         saveArticleFontSize();
         requestUpdate();
+      }
+    }
+  } else if (state == RssState::PostActionMenu) {
+    constexpr int kActionCount = 2;  // Visit Link, Show QR
+    if (mappedInput.wasReleased(MappedInputManager::Button::Back)) {
+      state = RssState::PostDetail;
+      requestUpdate();
+    } else if (mappedInput.wasReleased(MappedInputManager::Button::Up)) {
+      postActionMenuIndex = (postActionMenuIndex - 1 + kActionCount) % kActionCount;
+      requestUpdate();
+    } else if (mappedInput.wasReleased(MappedInputManager::Button::Down)) {
+      postActionMenuIndex = (postActionMenuIndex + 1) % kActionCount;
+      requestUpdate();
+    } else if (mappedInput.wasReleased(MappedInputManager::Button::Confirm)) {
+      if (postActionMenuIndex == 0) {
+        // downloadActivePost() restores article state assuming it's called
+        // from PostDetail (see its `state == RssState::PostDetail` checks on
+        // failure/offline paths), so switch back before invoking it.
+        state = RssState::PostDetail;
+        downloadActivePost();
+      } else {
+        showQrForActivePost();
       }
     }
   }
@@ -1588,6 +1646,7 @@ void RssActivity::render(RenderLock&&) {
                                       EpdFontFamily::REGULAR);
 
     int maxLines = (contentHeight - (contentY - contentTop)) / renderer.getLineHeight(articleFontId);
+    detailMaxLines = std::max(1, maxLines);
     if (detailScrollOffset > std::max(0, static_cast<int>(lines.size()) - maxLines)) {
       detailScrollOffset = std::max(0, static_cast<int>(lines.size()) - maxLines);
     }
@@ -1599,7 +1658,20 @@ void RssActivity::render(RenderLock&&) {
                         lines[lineIdx].c_str(), true, EpdFontFamily::REGULAR);
     }
 
-    const auto labels = mappedInput.mapLabels(tr(STR_BACK), "Visit Link", "-", "+");
+    const auto labels = mappedInput.mapLabels(tr(STR_BACK), tr(STR_SELECT), "-", "+");
+    GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
+  } else if (state == RssState::PostActionMenu) {
+    GUI.drawHeader(renderer, Rect{0, metrics.topPadding, pageWidth, metrics.headerHeight}, "RSS Post");
+
+    const int menuTop = contentTop;
+    const int menuBottom = contentBottom;
+    constexpr int kActionCount = 2;
+    GUI.drawButtonMenu(
+        renderer, Rect{0, menuTop, pageWidth, menuBottom - menuTop}, kActionCount, postActionMenuIndex,
+        [](int index) -> std::string { return index == 0 ? tr(STR_RSS_VISIT_LINK) : tr(STR_RSS_SHOW_QR); },
+        [](int) { return UIIcon::Library; }, 6);
+
+    const auto labels = mappedInput.mapLabels(tr(STR_BACK), tr(STR_SELECT), nullptr, nullptr);
     GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
   } else if (state == RssState::FeedSelection) {
     GUI.drawHeader(renderer, Rect{0, metrics.topPadding, pageWidth, metrics.headerHeight}, "RSS Feed");

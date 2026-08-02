@@ -23,6 +23,13 @@ class HttpDownloader {
     ABORTED,
   };
 
+  // Default per-socket-op timeout for callers that don't override it. Generous
+  // headroom for slow OPDS/download servers; callers with their own retry loop
+  // (small JSON list fetches) should pass a shorter timeoutMs below so a
+  // cooperative cancelFlag is checked often enough to avoid needing a forced
+  // vTaskDelete() on the fetch task.
+  static constexpr uint32_t kDefaultTimeoutMs = 60000;
+
   /**
    * Fetch text content from a URL with optional credentials.
    */
@@ -45,5 +52,5 @@ class HttpDownloader {
                                       ProgressCallback progress = nullptr, bool* cancelFlag = nullptr,
                                       const std::string& username = "", const std::string& password = "",
                                       std::string* outContentType = nullptr, std::string* outFinalUrl = nullptr,
-                                      std::string* outErrorDetail = nullptr);
+                                      std::string* outErrorDetail = nullptr, uint32_t timeoutMs = kDefaultTimeoutMs);
 };

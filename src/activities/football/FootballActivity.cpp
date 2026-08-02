@@ -11,6 +11,7 @@
 #include <algorithm>
 #include <ctime>
 
+#include "CrossPointSettings.h"
 #include "MappedInputManager.h"
 #include "activities/util/ConfirmationActivity.h"
 #include "activities/util/DownloadWatchdog.h"
@@ -21,6 +22,12 @@
 #include "util/ButtonNavigator.h"
 
 namespace {
+
+// Short per-attempt timeout for these small JSON list fetches (paired with the
+// existing 3x retry loop in runBackgroundFetch()), so a stalled request is
+// noticed well within cancelFetchTask()'s cooperative-cancel wait window
+// instead of forcing a vTaskDelete() on a task that may hold the storage mutex.
+constexpr uint32_t kListFetchTimeoutMs = 8000;
 
 struct AvailableLeague {
   const char* slug;
@@ -55,21 +62,91 @@ std::string sanitizeSlug(const std::string& slug) {
   return s;
 }
 
-// ESPN dates are ISO-8601 UTC, e.g. "2026-08-01T18:30Z".
-std::string formatEventDate(const std::string& iso) {
+struct LocalEventTime {
+  int month, day, hour, minute;
+  bool valid;
+};
+
+// ESPN dates are ISO-8601 UTC, e.g. "2026-08-01T18:30Z". Shifts to the same
+// UTC offset the Clock app uses (SETTINGS.clockUtcOffsetQ, in quarter-hours —
+// configured once in Settings, shared here instead of a football-specific
+// setting) and rolls the calendar fields by hand. Deliberately NOT using
+// mktime/timegm for this: CalendarActivity avoids them for the same reason
+// (they'd pull in libc's unconfigured timezone state on this target).
+LocalEventTime toLocalEventTime(const std::string& iso) {
   int y = 0, mo = 0, d = 0, h = 0, mi = 0;
-  if (sscanf(iso.c_str(), "%d-%d-%dT%d:%d", &y, &mo, &d, &h, &mi) == 5) {
-    char buf[16];
-    snprintf(buf, sizeof(buf), "%02d/%02d %02d:%02d", mo, d, h, mi);
-    return buf;
+  if (sscanf(iso.c_str(), "%d-%d-%dT%d:%d", &y, &mo, &d, &h, &mi) != 5) {
+    return LocalEventTime{0, 0, 0, 0, false};
   }
-  return iso;
+
+  const int offsetMinutes = (static_cast<int>(SETTINGS.clockUtcOffsetQ) - 48) * 15;
+  int totalMinutes = h * 60 + mi + offsetMinutes;
+
+  auto daysInMonth = [](int year, int month) {
+    static const int base[] = {31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31};
+    if (month == 2 && ((year % 4 == 0 && year % 100 != 0) || year % 400 == 0)) return 29;
+    return base[month - 1];
+  };
+
+  while (totalMinutes < 0) {
+    totalMinutes += 24 * 60;
+    d--;
+    if (d < 1) {
+      mo--;
+      if (mo < 1) {
+        mo = 12;
+        y--;
+      }
+      d = daysInMonth(y, mo);
+    }
+  }
+  while (totalMinutes >= 24 * 60) {
+    totalMinutes -= 24 * 60;
+    d++;
+    if (d > daysInMonth(y, mo)) {
+      d = 1;
+      mo++;
+      if (mo > 12) {
+        mo = 1;
+        y++;
+      }
+    }
+  }
+
+  return LocalEventTime{mo, d, totalMinutes / 60, totalMinutes % 60, true};
+}
+
+std::string formatEventTimeOnly(const std::string& iso) {
+  const LocalEventTime t = toLocalEventTime(iso);
+  if (!t.valid) return "";
+  char buf[8];
+  snprintf(buf, sizeof(buf), "%02d:%02d", t.hour, t.minute);
+  return buf;
+}
+
+std::string formatEventDateOnly(const std::string& iso) {
+  const LocalEventTime t = toLocalEventTime(iso);
+  if (!t.valid) return "";
+  char buf[8];
+  snprintf(buf, sizeof(buf), "%02d/%02d", t.month, t.day);
+  return buf;
 }
 
 void footballFetchTaskFunc(void* param) {
   auto* activity = static_cast<FootballActivity*>(param);
   activity->runBackgroundFetch();
   vTaskDelete(nullptr);
+}
+
+// Small filled banner drawn across the top of the content area so a refresh
+// always gives visible feedback, even when the previous data is still on
+// screen underneath it (manual refresh of an already-loaded tab).
+void drawStatusBanner(GfxRenderer& renderer, int y, const char* text) {
+  const int lineH = renderer.getLineHeight(SMALL_FONT_ID);
+  const int bannerH = lineH + 10;
+  renderer.fillRect(0, y, renderer.getScreenWidth(), bannerH, true);
+  const int textY = y + (bannerH - lineH) / 2;
+  renderer.drawCenteredText(SMALL_FONT_ID, textY, text, false);
 }
 
 }  // namespace
@@ -205,10 +282,11 @@ void FootballActivity::runBackgroundFetch() {
 
   bool success = false;
   int retries = 3;
-  while (retries > 0 && !DownloadWatchdog::gotTimeout) {
+  while (retries > 0 && !DownloadWatchdog::gotTimeout && !cancelFetch) {
     std::string errDetail;
-    const auto result = HttpDownloader::downloadToFile(apiUrl(fetchingTab), tmpPath(fetchingTab), nullptr, nullptr,
-                                                        "", "", nullptr, nullptr, &errDetail);
+    const auto result = HttpDownloader::downloadToFile(apiUrl(fetchingTab), tmpPath(fetchingTab), nullptr,
+                                                        &cancelFetch, "", "", nullptr, nullptr, &errDetail,
+                                                        kListFetchTimeoutMs);
     if (result == HttpDownloader::OK) {
       success = true;
       break;
@@ -218,7 +296,7 @@ void FootballActivity::runBackgroundFetch() {
              errDetail.c_str(), retries, (unsigned)ESP.getFreeHeap());
     LOG_ERR("FOOTBALL", "%s", buf);
     appendDebugLog(buf);
-    if (retries > 0 && !DownloadWatchdog::gotTimeout) delay(1000);
+    if (retries > 0 && !DownloadWatchdog::gotTimeout && !cancelFetch) delay(1000);
   }
 
   DownloadWatchdog::stop();
@@ -233,30 +311,55 @@ void FootballActivity::runBackgroundFetch() {
   LOG_INF("FOOTBALL", "%s", buf);
   appendDebugLog(buf);
 
+  // Cancelled (cancelFetchTask() is waiting on fetchTaskHandle below): clear
+  // it ourselves from inside the task, right before it ends, instead of
+  // reporting a result nobody asked for anymore.
+  if (cancelFetch) {
+    fetchTaskHandle = nullptr;
+    return;
+  }
+
   backgroundFetchSuccess = success;
   pendingUpdate = true;
 }
 
+// Cooperative cancel + bounded wait, same pattern RssActivity.cpp already
+// uses successfully: ask the task to stop (cancelFetch), give it up to 5s to
+// unwind through its own esp_http_client/SD-file cleanup, and only fall back
+// to a raw vTaskDelete() (which — see startFetch()'s old comment — skips
+// that cleanup and leaks the socket/TLS session) if it's genuinely stuck.
 void FootballActivity::cancelFetchTask() {
   if (fetchTaskHandle != nullptr) {
-    TaskHandle_t tempHandle = static_cast<TaskHandle_t>(fetchTaskHandle);
-    fetchTaskHandle = nullptr;
-    vTaskDelete(tempHandle);
+    cancelFetch = true;
+    int waitCount = 0;
+    // Bound exceeds kListFetchTimeoutMs (8s) so the cooperative cancel is
+    // reliably observed inside a blocked esp_http_client_read() before we'd
+    // ever consider the vTaskDelete() fallback below.
+    while (fetchTaskHandle != nullptr && waitCount < 1000) {
+      delay(10);
+      waitCount++;
+    }
+    if (fetchTaskHandle != nullptr) {
+      LOG_ERR("FOOTBALL", "Task failed to exit gracefully, forcing vTaskDelete!");
+      appendDebugLog("Task failed to exit gracefully, forcing vTaskDelete!");
+      TaskHandle_t tempHandle = static_cast<TaskHandle_t>(fetchTaskHandle);
+      fetchTaskHandle = nullptr;
+      vTaskDelete(tempHandle);
+    }
   }
   pendingUpdate = false;
 }
 
 void FootballActivity::startFetch(int tab) {
-  // Killing a FreeRTOS task via vTaskDelete() mid-HTTP-request (open TLS
-  // session, esp_http_client buffers) skips its cleanup entirely and leaks
-  // that memory permanently — observed in the field as free heap collapsing
-  // from ~22KB to <4KB after a couple of tab switches. Rather than cancel and
-  // restart, just let the in-flight fetch finish; it'll land in its own tab's
-  // cache once done.
-  if (fetchTaskHandle != nullptr) {
-    return;
-  }
+  // Cancel (and fully wait out) any previous fetch BEFORE switching
+  // fetchingTab to the new tab — runBackgroundFetch() reads fetchingTab live
+  // on every retry, so flipping it while an old task might still be mid-retry
+  // would make that old task fetch/save into the new tab's paths instead.
+  cancelFetchTask();
   fetchingTab = tab;
+  cancelFetch = false;
+  refreshing[tab] = true;
+  refreshFailed[tab] = false;
   Storage.ensureDirectoryExists("/apps");
   Storage.ensureDirectoryExists("/apps/football");
   ensureWifiConnected(
@@ -269,8 +372,11 @@ void FootballActivity::startFetch(int tab) {
         snprintf(buf, sizeof(buf), "WiFi connect cancelled/failed for tab %d", fetchingTab);
         LOG_ERR("FOOTBALL", "%s", buf);
         appendDebugLog(buf);
+        refreshing[fetchingTab] = false;
         if (!loaded[fetchingTab]) {
           errorMessage[fetchingTab] = tr(STR_FOOTBALL_WIFI_REQUIRED);
+        } else {
+          refreshFailed[fetchingTab] = true;
         }
         requestUpdate();
       });
@@ -338,15 +444,15 @@ void FootballActivity::parseAndStore(int tab, HalFile& file) {
     return;
   }
 
-  std::vector<FootballRow> newRows;
+  std::vector<FootballMatch> newMatches;
   std::vector<FootballGroup> newGroups;
 
   if (tab == static_cast<int>(FootballTab::Results)) {
     constexpr size_t MAX_RESULT_ROWS = 20;  // defensive cap regardless of window size
     JsonArray events = doc["events"];
-    newRows.reserve(std::min(events.size(), MAX_RESULT_ROWS));
+    newMatches.reserve(std::min(events.size(), MAX_RESULT_ROWS));
     for (JsonObject event : events) {
-      if (newRows.size() >= MAX_RESULT_ROWS) break;
+      if (newMatches.size() >= MAX_RESULT_ROWS) break;
       std::string state = event["status"]["type"]["state"] | "";
       std::string desc = event["status"]["type"]["description"] | "";
       std::string dateStr = event["date"] | "";
@@ -366,18 +472,11 @@ void FootballActivity::parseAndStore(int tab, HalFile& file) {
         }
       }
 
-      std::string title;
-      if (state == "pre") {
-        title = home + " vs " + away;
-      } else {
-        title = home + " " + homeScore + " - " + awayScore + " " + away;
-      }
-      std::string subtitle = desc + "  " + formatEventDate(dateStr);
-      newRows.push_back(FootballRow{title, subtitle, ""});
+      newMatches.push_back(FootballMatch{home, away, homeScore, awayScore, state, desc, dateStr});
     }
     // Most recently played first: events already arrive in chronological
     // order from ESPN, so just reverse rather than re-sorting.
-    std::reverse(newRows.begin(), newRows.end());
+    std::reverse(newMatches.begin(), newMatches.end());
   } else {
     // ESPN doesn't return entries pre-sorted by rank, so sort each group
     // (zone) separately by rank before appending; groups themselves stay in
@@ -425,7 +524,7 @@ void FootballActivity::parseAndStore(int tab, HalFile& file) {
   }
 
   const bool isResults = tab == static_cast<int>(FootballTab::Results);
-  size_t totalRows = isResults ? newRows.size() : 0;
+  size_t totalRows = isResults ? newMatches.size() : 0;
   if (!isResults) {
     for (const auto& group : newGroups) totalRows += group.rows.size();
   }
@@ -440,7 +539,7 @@ void FootballActivity::parseAndStore(int tab, HalFile& file) {
   }
 
   if (isResults) {
-    resultsRows = std::move(newRows);
+    resultsMatches = std::move(newMatches);
     selectedResultsRow = 0;
   } else {
     standingsGroups = std::move(newGroups);
@@ -475,6 +574,7 @@ void FootballActivity::loop() {
     pendingUpdate = false;
     fetchTaskHandle = nullptr;
     int tab = fetchingTab;
+    refreshing[tab] = false;
     if (backgroundFetchSuccess) {
       Storage.remove(cachePath(tab).c_str());
       Storage.rename(tmpPath(tab).c_str(), cachePath(tab).c_str());
@@ -484,6 +584,12 @@ void FootballActivity::loop() {
       }
     } else if (!loaded[tab]) {
       errorMessage[tab] = tr(STR_FOOTBALL_NO_DATA);
+    } else {
+      // Refresh failed but we still have good cached data from before —
+      // keep showing it instead of replacing it with an error screen, but
+      // flag it so render() can surface a brief "couldn't update" banner
+      // instead of failing completely silently.
+      refreshFailed[tab] = true;
     }
     requestUpdate();
   }
@@ -512,7 +618,7 @@ void FootballActivity::loop() {
           loaded[t] = false;
           errorMessage[t].clear();
         }
-        resultsRows.clear();
+        resultsMatches.clear();
         selectedResultsRow = 0;
         standingsGroups.clear();
         selectedGroupIndex = 0;
@@ -620,8 +726,9 @@ void FootballActivity::loop() {
             requestUpdate();
           }
         }
-      } else if (!resultsRows.empty()) {
-        selectedResultsRow = static_cast<int>((selectedResultsRow - 1 + resultsRows.size()) % resultsRows.size());
+      } else if (!resultsMatches.empty()) {
+        selectedResultsRow =
+            static_cast<int>((selectedResultsRow - 1 + resultsMatches.size()) % resultsMatches.size());
         requestUpdate();
       }
     } else if (mappedInput.wasReleased(MappedInputManager::Button::Down)) {
@@ -633,12 +740,105 @@ void FootballActivity::loop() {
             requestUpdate();
           }
         }
-      } else if (!resultsRows.empty()) {
-        selectedResultsRow = static_cast<int>((selectedResultsRow + 1) % resultsRows.size());
+      } else if (!resultsMatches.empty()) {
+        selectedResultsRow = static_cast<int>((selectedResultsRow + 1) % resultsMatches.size());
         requestUpdate();
       }
     } else if (mappedInput.wasReleased(MappedInputManager::Button::Confirm)) {
       startFetch(static_cast<int>(currentTab));
+    }
+  }
+}
+
+// Paginates the same way LyraTheme::drawButtonMenu does (window of pageItems
+// rows centered on the selection, clamped to bounds) since GUI.drawList can't
+// be reused here — it only draws plain title/subtitle/value text, not a
+// custom score box.
+void FootballActivity::drawResultsList(int x, int y, int width, int height) {
+  const int totalRows = static_cast<int>(resultsMatches.size());
+  if (totalRows == 0) return;
+
+  constexpr int kBoxW = 90;
+  constexpr int kBoxH = 32;
+  constexpr int kGap = 8;          // gap between a team name and the score box
+  constexpr int kSidePadding = 12;
+  constexpr int kLineGap = 6;      // gap between the name/box line and the status line below it
+  constexpr int kDividerPad = 10;  // padding above/below the divider between matches
+
+  // Box text (score/kickoff time) stays at UI_12 BOLD — it's the element that
+  // should keep standing out. Team names are a size down at UI_10: at UI_12
+  // too many names were getting truncated against the centered box.
+  const int boxLineH = renderer.getLineHeight(UI_12_FONT_ID);
+  const int nameLineH = renderer.getLineHeight(UI_10_FONT_ID);
+  const int subLineH = renderer.getLineHeight(SMALL_FONT_ID);
+  const int rowContentH = std::max(boxLineH, kBoxH) + kLineGap + subLineH;
+  const int rowStep = rowContentH + kDividerPad * 2 + 1;  // +1 for the divider line itself
+
+  const int pageItems = std::max(1, height / rowStep);
+  int pageStart = selectedResultsRow - (pageItems - 1) / 2;
+  pageStart = std::max(0, std::min(pageStart, std::max(0, totalRows - pageItems)));
+
+  int rowY = y;
+  for (int i = pageStart; i < totalRows && i < pageStart + pageItems; i++) {
+    const auto& m = resultsMatches[i];
+    const bool selected = (i == selectedResultsRow);
+    const bool isLive = (m.state == "in");
+    const bool isPre = (m.state == "pre");
+
+    if (selected) {
+      // Full dark row instead of just an outline, so the current selection is
+      // unambiguous — everything drawn below flips to white on this row.
+      renderer.fillRect(x, rowY - kDividerPad / 2, width, rowContentH + kDividerPad, true);
+    }
+
+    const int boxX = x + (width - kBoxW) / 2;
+    const int boxY = rowY;
+    // The "live = filled black box" distinction only matters when scanning
+    // the whole list at a glance; on the row you're already focused on, the
+    // box always goes white-filled + black border/text instead, so it still
+    // reads clearly against the row's black background.
+    const bool boxFilledBlack = isLive && !selected;
+    if (boxFilledBlack) {
+      renderer.fillRoundedRect(boxX, boxY, kBoxW, kBoxH, 4, Color::Black);
+    } else {
+      if (selected) {
+        renderer.fillRoundedRect(boxX, boxY, kBoxW, kBoxH, 4, Color::White);
+      }
+      renderer.drawRoundedRect(boxX, boxY, kBoxW, kBoxH, 1, 4, true);
+    }
+
+    const std::string boxText = isPre ? formatEventTimeOnly(m.dateIso) : (m.homeScore + " - " + m.awayScore);
+    const int boxTextW = renderer.getTextWidth(UI_12_FONT_ID, boxText.c_str(), EpdFontFamily::BOLD);
+    const int boxTextX = boxX + (kBoxW - boxTextW) / 2;
+    const int boxTextY = boxY + (kBoxH - boxLineH) / 2;
+    renderer.drawText(UI_12_FONT_ID, boxTextX, boxTextY, boxText.c_str(), !boxFilledBlack, EpdFontFamily::BOLD);
+
+    // Team names are truncated to whatever room is left on their side of the
+    // centered box, so a long name can't run into (or under) the score.
+    const int leftAvailW = boxX - kGap - (x + kSidePadding);
+    const int rightAvailW = (x + width - kSidePadding) - (boxX + kBoxW + kGap);
+    const std::string homeTrunc =
+        renderer.truncatedText(UI_10_FONT_ID, m.home.c_str(), leftAvailW, EpdFontFamily::REGULAR);
+    const std::string awayTrunc =
+        renderer.truncatedText(UI_10_FONT_ID, m.away.c_str(), rightAvailW, EpdFontFamily::REGULAR);
+    const int homeTruncW = renderer.getTextWidth(UI_10_FONT_ID, homeTrunc.c_str(), EpdFontFamily::REGULAR);
+    const int nameTextY = boxY + (kBoxH - nameLineH) / 2;
+    renderer.drawText(UI_10_FONT_ID, boxX - kGap - homeTruncW, nameTextY, homeTrunc.c_str(), !selected,
+                      EpdFontFamily::REGULAR);
+    renderer.drawText(UI_10_FONT_ID, boxX + kBoxW + kGap, nameTextY, awayTrunc.c_str(), !selected,
+                      EpdFontFamily::REGULAR);
+
+    const std::string subtitle = m.statusDesc + "  " + formatEventDateOnly(m.dateIso);
+    const int subTextW = renderer.getTextWidth(SMALL_FONT_ID, subtitle.c_str());
+    const int subTextX = x + (width - subTextW) / 2;
+    const int subTextY = boxY + kBoxH + kLineGap;
+    renderer.drawText(SMALL_FONT_ID, subTextX, subTextY, subtitle.c_str(), !selected);
+
+    rowY += rowStep;
+    const bool hasNextVisibleRow = (i + 1 < totalRows) && (i + 1 < pageStart + pageItems);
+    if (hasNextVisibleRow) {
+      const int lineY = rowY - kDividerPad - 1;
+      renderer.drawLine(x + kSidePadding, lineY, x + width - kSidePadding, lineY, 1, true);
     }
   }
 }
@@ -729,7 +929,7 @@ void FootballActivity::render(RenderLock&&) {
     const int listBottom = pageHeight - metrics.buttonHintsHeight - metrics.verticalSpacing;
     const Rect listRect{0, contentTop, pageWidth, listBottom - contentTop};
 
-    if (!loaded[tab]) {
+    if (!loaded[tab] && !refreshing[tab]) {
       const int textY = contentTop + (listBottom - contentTop) / 2 - renderer.getLineHeight(UI_12_FONT_ID) / 2;
       const char* msg = !errorMessage[tab].empty() ? errorMessage[tab].c_str() : tr(STR_FOOTBALL_LOADING);
       renderer.drawCenteredText(UI_12_FONT_ID, textY, msg);
@@ -745,14 +945,18 @@ void FootballActivity::render(RenderLock&&) {
             [&tabRows](int i) { return tabRows[i].value; }, true);
       }
     } else {
-      GUI.drawList(
-          renderer, listRect, static_cast<int>(resultsRows.size()), selectedResultsRow,
-          [this](int i) { return resultsRows[i].title; }, [this](int i) { return resultsRows[i].subtitle; }, nullptr,
-          [this](int i) { return resultsRows[i].value; }, true);
+      drawResultsList(listRect.x, listRect.y, listRect.width, listRect.height);
+    }
+
+    if (refreshing[tab]) {
+      drawStatusBanner(renderer, contentTop, tr(STR_FOOTBALL_REFRESHING));
+    } else if (refreshFailed[tab]) {
+      drawStatusBanner(renderer, contentTop, tr(STR_FOOTBALL_REFRESH_FAILED));
     }
 
     const auto labels = mappedInput.mapLabels(tr(STR_BACK), tr(STR_FOOTBALL_REFRESH), tr(STR_DIR_LEFT), tr(STR_DIR_RIGHT));
-    GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
+    GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4, ButtonArrow::Left,
+                        ButtonArrow::Right);
   }
 
   renderer.displayBuffer();

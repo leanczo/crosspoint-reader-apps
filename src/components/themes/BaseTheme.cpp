@@ -198,8 +198,39 @@ void BaseTheme::drawProgressBar(const GfxRenderer& renderer, Rect rect, const si
   renderer.drawCenteredText(UI_10_FONT_ID, rect.y + rect.height + 15, percentText.c_str());
 }
 
+void BaseTheme::drawArrowGlyph(const GfxRenderer& renderer, int centerX, int centerY, ButtonArrow direction,
+                               bool color) {
+  constexpr int shaftLen = 9;
+  constexpr int headSize = 6;
+  switch (direction) {
+    case ButtonArrow::Left:
+      renderer.drawLine(centerX - shaftLen, centerY, centerX + shaftLen, centerY, 2, color);
+      renderer.drawLine(centerX - shaftLen, centerY, centerX - shaftLen + headSize, centerY - headSize, 2, color);
+      renderer.drawLine(centerX - shaftLen, centerY, centerX - shaftLen + headSize, centerY + headSize, 2, color);
+      break;
+    case ButtonArrow::Right:
+      renderer.drawLine(centerX - shaftLen, centerY, centerX + shaftLen, centerY, 2, color);
+      renderer.drawLine(centerX + shaftLen, centerY, centerX + shaftLen - headSize, centerY - headSize, 2, color);
+      renderer.drawLine(centerX + shaftLen, centerY, centerX + shaftLen - headSize, centerY + headSize, 2, color);
+      break;
+    case ButtonArrow::Up:
+      renderer.drawLine(centerX, centerY - shaftLen, centerX, centerY + shaftLen, 2, color);
+      renderer.drawLine(centerX, centerY - shaftLen, centerX - headSize, centerY - shaftLen + headSize, 2, color);
+      renderer.drawLine(centerX, centerY - shaftLen, centerX + headSize, centerY - shaftLen + headSize, 2, color);
+      break;
+    case ButtonArrow::Down:
+      renderer.drawLine(centerX, centerY - shaftLen, centerX, centerY + shaftLen, 2, color);
+      renderer.drawLine(centerX, centerY + shaftLen, centerX - headSize, centerY + shaftLen - headSize, 2, color);
+      renderer.drawLine(centerX, centerY + shaftLen, centerX + headSize, centerY + shaftLen - headSize, 2, color);
+      break;
+    case ButtonArrow::None:
+    default:
+      break;
+  }
+}
+
 void BaseTheme::drawButtonHints(GfxRenderer& renderer, const char* btn1, const char* btn2, const char* btn3,
-                                const char* btn4) const {
+                                const char* btn4, ButtonArrow arrow3, ButtonArrow arrow4) const {
   const GfxRenderer::Orientation orig_orientation = renderer.getOrientation();
   renderer.setOrientation(GfxRenderer::Orientation::Portrait);
 
@@ -213,6 +244,7 @@ void BaseTheme::drawButtonHints(GfxRenderer& renderer, const char* btn1, const c
   constexpr int x3ButtonPositions[] = {38, 154, 268, 384};
   const int* buttonPositions = gpio.deviceIsX3() ? x3ButtonPositions : x4ButtonPositions;
   const char* labels[] = {btn1, btn2, btn3, btn4};
+  const ButtonArrow arrows[] = {ButtonArrow::None, ButtonArrow::None, arrow3, arrow4};
 
   for (int i = 0; i < 4; i++) {
     // Only draw if the label is non-empty
@@ -220,9 +252,13 @@ void BaseTheme::drawButtonHints(GfxRenderer& renderer, const char* btn1, const c
       const int x = buttonPositions[i];
       renderer.fillRect(x, pageHeight - buttonY, buttonWidth, buttonHeight, false);
       renderer.drawRect(x, pageHeight - buttonY, buttonWidth, buttonHeight);
-      const int textWidth = renderer.getTextWidth(UI_10_FONT_ID, labels[i]);
-      const int textX = x + (buttonWidth - 1 - textWidth) / 2;
-      renderer.drawText(UI_10_FONT_ID, textX, pageHeight - buttonY + textYOffset, labels[i]);
+      if (arrows[i] != ButtonArrow::None) {
+        drawArrowGlyph(renderer, x + buttonWidth / 2, pageHeight - buttonY + buttonHeight / 2, arrows[i]);
+      } else {
+        const int textWidth = renderer.getTextWidth(UI_10_FONT_ID, labels[i]);
+        const int textX = x + (buttonWidth - 1 - textWidth) / 2;
+        renderer.drawText(UI_10_FONT_ID, textX, pageHeight - buttonY + textYOffset, labels[i]);
+      }
     }
   }
 

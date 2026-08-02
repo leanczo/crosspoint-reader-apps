@@ -38,6 +38,10 @@ class HackerNewsActivity final : public Activity {
   bool backgroundFetchSuccess = false;
   int fetchingTab = -1;
   void* fetchTaskHandle = nullptr;
+  // Cooperative cancellation for cancelFetchTask() — mirrors FootballActivity/
+  // FormulaOneActivity. Plain bool, not volatile: HttpDownloader::downloadToFile's
+  // cancelFlag parameter is `bool*`, and passing a `volatile bool*` there wouldn't compile.
+  bool cancelFetch = false;
 
   void startFetch(int tab);
   void cancelFetchTask();

@@ -18,7 +18,11 @@ enum class RssState {
   FeedSelection,
   Loading,
   FeedList,
-  PostDetail
+  PostDetail,
+  // Reached by pressing Confirm from PostDetail — a small 2-item menu
+  // (Visit Link / Show QR) since PostDetail's 4 buttons are all already
+  // spoken for (scroll, font size, back).
+  PostActionMenu
 };
 
 class RssActivity final : public Activity {
@@ -32,7 +36,13 @@ class RssActivity final : public Activity {
    int selectedSubIndex = 0;
    int itemsScrollOffset = 0;
    int detailScrollOffset = 0;
-   uint8_t articleFontSizeIndex = 1; // index into kRssArticleFontIds, persisted across sessions
+   int postActionMenuIndex = 0;  // which item is highlighted in PostActionMenu
+   // Lines-per-screen for the article body at the current font size, computed
+   // by render() and reused by loop() so Up/Down scroll by a full page
+   // instead of a single line (avoids the old "scrolls one row, most of the
+   // screen repeats" behavior).
+   int detailMaxLines = 1;
+   uint8_t articleFontSizeIndex = 0; // index into kRssArticleFontIds, persisted across sessions
 
    bool offlineMode = false;
    std::string errorMessage;
@@ -52,6 +62,7 @@ class RssActivity final : public Activity {
 
    bool parseFeedsFromMarkdown(const std::string &filepath, std::vector<RssItem> &targetList, bool summaryOnly = false);
    void downloadActivePost();
+   void showQrForActivePost();
    // Overwrites /apps/rss/rss_debug.log with the given contents, so the last fetch
    // attempt's HTTP result/error detail can be inspected from the SD card without
    // a serial connection.

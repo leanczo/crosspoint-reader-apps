@@ -97,7 +97,11 @@ struct ThemeMetrics {
   int textFieldLineEndOffset;
 };
 
-enum UIIcon { Folder, Text, Image, Book, File, Recent, Settings, Transfer, Library, Wifi, Hotspot, Calculator, Weather, Sudoku, Clock, Wikipedia, Chess, Dice, DuckDuckGo, Rss, TicTacToe, FormulaOne, Snake, Football, Calendar, Map, Game2048, HackerNews };
+enum UIIcon { Folder, Text, Image, Book, File, Recent, Settings, Transfer, Library, Wifi, Hotspot, Calculator, Weather, Sudoku, Clock, Wikipedia, Chess, Dice, DuckDuckGo, Rss, TicTacToe, FormulaOne, Snake, Football, Calendar, Game2048, HackerNews, Minesweeper, Simon };
+
+// Directional glyph drawn in a button-hint slot instead of translated text
+// ("Izq."/"Dcha." etc.) — arrows read the same across every language.
+enum class ButtonArrow : uint8_t { None, Left, Right, Up, Down };
 
 
 enum class KeyboardKeyType { Normal, Shift, Mode, Space, Del, Ok, Disabled };
@@ -181,7 +185,8 @@ class BaseTheme {
                         bool showPercentage = true) const;  // Right aligned (UI headers)
   virtual void fillBatteryIcon(const GfxRenderer& renderer, Rect rect, uint16_t percentage) const;
   virtual void drawButtonHints(GfxRenderer& renderer, const char* btn1, const char* btn2, const char* btn3,
-                               const char* btn4) const;
+                               const char* btn4, ButtonArrow arrow3 = ButtonArrow::None,
+                               ButtonArrow arrow4 = ButtonArrow::None) const;
   virtual void drawSideButtonHints(const GfxRenderer& renderer, const char* topBtn, const char* bottomBtn) const;
   virtual void drawList(const GfxRenderer& renderer, Rect rect, int itemCount, int selectedIndex,
                         const std::function<std::string(int index)>& rowTitle,
@@ -220,4 +225,9 @@ class BaseTheme {
   static constexpr int batteryPercentSpacing = 4;
   static void drawBatteryOutline(const GfxRenderer& renderer, int x, int y, int battWidth, int rectHeight);
   static void drawBatteryLightningBolt(const GfxRenderer& renderer, int boltX, int boltY);
+
+  // Shared directional-arrow glyph for drawButtonHints (all themes render the
+  // same shaft+arrowhead shape, same technique as the keyboard Del key glyph).
+  static void drawArrowGlyph(const GfxRenderer& renderer, int centerX, int centerY, ButtonArrow direction,
+                             bool color = true);
 };

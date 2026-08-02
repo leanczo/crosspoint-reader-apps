@@ -1,9 +1,16 @@
 #include "ClockActivity.h"
 #include <HalClock.h>
 #include "CrossPointSettings.h"
+#include "I18n.h"
 #include "fontIds.h"
 #include "components/UITheme.h"
+#include "activities/settings/ClockSyncActivity.h"
+#include <algorithm>
 #include <cmath>
+
+namespace {
+constexpr unsigned long LONG_PRESS_MS = 1000;
+}  // namespace
 
 #ifndef M_PI
 #define M_PI 3.14159265358979323846
@@ -163,35 +170,163 @@ void ClockActivity::getLocalTime(uint8_t& localHour, uint8_t& localMin) {
   localMin = totalMinutes % 60;
 }
 
+const char* ClockActivity::modeShortName(ClockMode m) {
+  switch (m) {
+    case ClockMode::Analog:
+      return tr(STR_CLOCK_MODE_ANALOG);
+    case ClockMode::Digital:
+      return tr(STR_CLOCK_MODE_DIGITAL);
+    case ClockMode::Flip:
+      return tr(STR_CLOCK_MODE_FLIP);
+    case ClockMode::Stopwatch:
+      return tr(STR_CLOCK_STOPWATCH_TITLE);
+    case ClockMode::Timer:
+      return tr(STR_CLOCK_TIMER_TITLE);
+  }
+  return "";
+}
+
+// Long-press Back: connect to WiFi if needed, then force an NTP resync via
+// the same ClockSyncActivity screen Settings uses (bypasses the
+// once-per-device clockHasBeenSynced debounce that ensureWifiConnected's own
+// opportunistic sync respects, so this always actually re-syncs on request).
+void ClockActivity::syncClock() {
+  ensureWifiConnected(
+      [this]() {
+        startActivityForResult(std::make_unique<ClockSyncActivity>(renderer, mappedInput),
+                                [this](const ActivityResult&) {
+                                  lastHour = 99;
+                                  lastMinute = 99;
+                                  lastTimeCheck = 0;
+                                  requestUpdate();
+                                });
+      },
+      [this]() { requestUpdate(); });
+}
+
+bool ClockActivity::preventAutoSleep() {
+  // Keep the device awake while a countdown/stopwatch is actively running —
+  // both live entirely in this Activity's RAM (see the class comment on
+  // timerEndMs), so falling asleep and getting evicted would silently lose
+  // the running timer.
+  return (mode == ClockMode::Stopwatch && stopwatchRunning) || (mode == ClockMode::Timer && timerRunning);
+}
+
 void ClockActivity::loop() {
   unsigned long now = millis();
-  if (now - lastTimeCheck >= 1000 || lastHour == 99) {
-    lastTimeCheck = now;
-    uint8_t h, m;
-    getLocalTime(h, m);
-    if (h != lastHour || m != lastMinute) {
-      lastHour = h;
-      lastMinute = m;
+
+  if (mode == ClockMode::Stopwatch) {
+    // Display value is always recomputed live from millis() in
+    // drawStopwatch(); this tick only exists to trigger the once-a-second
+    // redraw while running (e-ink has no business refreshing faster).
+    if (stopwatchRunning && now - lastTimeCheck >= 1000) {
+      lastTimeCheck = now;
       requestUpdate();
+    }
+  } else if (mode == ClockMode::Timer) {
+    if (timerRunning && now - lastTimeCheck >= 1000) {
+      lastTimeCheck = now;
+      long msLeft = static_cast<long>(timerEndMs - now);
+      if (msLeft <= 0) {
+        timerRemainingSec = 0;
+        timerRunning = false;
+        timerFinished = true;
+      } else {
+        timerRemainingSec = static_cast<int>((msLeft + 999) / 1000);
+      }
+      requestUpdate();
+    }
+  } else {
+    if (now - lastTimeCheck >= 1000 || lastHour == 99) {
+      lastTimeCheck = now;
+      uint8_t h, m;
+      getLocalTime(h, m);
+      if (h != lastHour || m != lastMinute) {
+        lastHour = h;
+        lastMinute = m;
+        requestUpdate();
+      }
     }
   }
 
+  if (mappedInput.isPressed(MappedInputManager::Button::Back) && mappedInput.getHeldTime() >= LONG_PRESS_MS) {
+    syncClock();
+    return;
+  }
   if (mappedInput.wasReleased(MappedInputManager::Button::Back)) {
     finish();
     return;
   }
 
   if (mappedInput.wasReleased(MappedInputManager::Button::Left)) {
-    if (mode == ClockMode::Analog) mode = ClockMode::Flip;
-    else if (mode == ClockMode::Digital) mode = ClockMode::Analog;
-    else mode = ClockMode::Digital;
+    mode = static_cast<ClockMode>((static_cast<int>(mode) + MODE_COUNT - 1) % MODE_COUNT);
     requestUpdate();
-  } else if (mappedInput.wasReleased(MappedInputManager::Button::Right)) {
-    if (mode == ClockMode::Analog) mode = ClockMode::Digital;
-    else if (mode == ClockMode::Digital) mode = ClockMode::Flip;
-    else mode = ClockMode::Analog;
+    return;
+  }
+  if (mappedInput.wasReleased(MappedInputManager::Button::Right)) {
+    mode = static_cast<ClockMode>((static_cast<int>(mode) + 1) % MODE_COUNT);
     requestUpdate();
-  } else if (mappedInput.wasReleased(MappedInputManager::Button::Confirm)) {
+    return;
+  }
+
+  if (mode == ClockMode::Stopwatch) {
+    if (mappedInput.wasReleased(MappedInputManager::Button::Confirm)) {
+      if (stopwatchRunning) {
+        stopwatchElapsedMs += now - stopwatchStartMs;
+        stopwatchRunning = false;
+      } else {
+        stopwatchStartMs = now;
+        stopwatchRunning = true;
+      }
+      requestUpdate();
+    } else if (!stopwatchRunning && mappedInput.wasReleased(MappedInputManager::Button::Up)) {
+      // Reset only allowed while stopped, so a mistimed press mid-run can't
+      // wipe out an in-progress measurement.
+      stopwatchElapsedMs = 0;
+      requestUpdate();
+    }
+    return;
+  }
+
+  if (mode == ClockMode::Timer) {
+    if (timerFinished) {
+      if (mappedInput.wasReleased(MappedInputManager::Button::Confirm)) {
+        timerFinished = false;
+        timerRemainingSec = timerDurationSec;
+        requestUpdate();
+      }
+      return;
+    }
+
+    if (mappedInput.wasReleased(MappedInputManager::Button::Confirm)) {
+      if (timerRunning) {
+        long msLeft = static_cast<long>(timerEndMs - now);
+        timerRemainingSec = static_cast<int>(std::max<long>(0, (msLeft + 999) / 1000));
+        timerRunning = false;
+      } else if (timerRemainingSec > 0) {
+        timerEndMs = now + static_cast<unsigned long>(timerRemainingSec) * 1000UL;
+        timerRunning = true;
+      }
+      requestUpdate();
+    } else if (!timerRunning) {
+      // Duration is only adjustable while idle — 1-minute steps, held-repeat
+      // via ButtonNavigator so dialing in e.g. 25 minutes doesn't take 25
+      // separate presses.
+      buttonNavigator.onPressAndContinuous({MappedInputManager::Button::Up}, [this] {
+        timerDurationSec = std::min(99 * 60, timerDurationSec + 60);
+        timerRemainingSec = timerDurationSec;
+        requestUpdate();
+      });
+      buttonNavigator.onPressAndContinuous({MappedInputManager::Button::Down}, [this] {
+        timerDurationSec = std::max(60, timerDurationSec - 60);
+        timerRemainingSec = timerDurationSec;
+        requestUpdate();
+      });
+    }
+    return;
+  }
+
+  if (mappedInput.wasReleased(MappedInputManager::Button::Confirm)) {
     use12Hour = !use12Hour;
     requestUpdate();
   }
@@ -347,6 +482,51 @@ void ClockActivity::drawFlipClock(const ThemeMetrics& metrics, int contentTop, i
   renderer.drawCenteredText(NOTOSANS_14_FONT_ID, startY + cardH + 30, infoBuf);
 }
 
+// Shared MM:SS block-digit layout for Stopwatch/Timer — mirrors
+// drawDigitalClock's digit math intentionally (same visual weight as the
+// clock faces) but without the AM/PM/UTC info line, which doesn't apply here.
+void ClockActivity::drawBigTime(int contentTop, int contentHeight, int pageWidth, int minutes, int seconds) {
+  int blockSize = 18;
+  int digitW = 5 * blockSize;
+  int digitH = 7 * blockSize;
+  int spacing = 18;
+  int colonW = 18;
+
+  int totalW = 4 * digitW + 2 * spacing + colonW + 2 * spacing;
+  int startX = (pageWidth - totalW) / 2;
+  int startY = contentTop + (contentHeight - digitH) / 2;
+
+  int m1 = minutes / 10;
+  int m2 = minutes % 10;
+  int s1 = seconds / 10;
+  int s2 = seconds % 10;
+
+  drawDigit(startX, startY, m1, blockSize, Color::Black);
+  drawDigit(startX + digitW + spacing, startY, m2, blockSize, Color::Black);
+  drawColon(startX + 2 * digitW + 2 * spacing, startY, blockSize, Color::Black);
+  drawDigit(startX + 2 * digitW + 2 * spacing + colonW + spacing, startY, s1, blockSize, Color::Black);
+  drawDigit(startX + 3 * digitW + 3 * spacing + colonW + spacing, startY, s2, blockSize, Color::Black);
+}
+
+void ClockActivity::drawStopwatch(int contentTop, int contentHeight, int pageWidth) {
+  unsigned long elapsedMs = stopwatchElapsedMs;
+  if (stopwatchRunning) elapsedMs += millis() - stopwatchStartMs;
+
+  int totalSec = static_cast<int>(elapsedMs / 1000);
+  const int maxSec = 99 * 60 + 59;  // block-digit layout only has 2 digits per field
+  if (totalSec > maxSec) totalSec = maxSec;
+
+  drawBigTime(contentTop, contentHeight, pageWidth, totalSec / 60, totalSec % 60);
+}
+
+void ClockActivity::drawTimer(int contentTop, int contentHeight, int pageWidth) {
+  int totalSec = std::max(0, timerRemainingSec);
+  const int maxSec = 99 * 60 + 59;
+  if (totalSec > maxSec) totalSec = maxSec;
+
+  drawBigTime(contentTop, contentHeight, pageWidth, totalSec / 60, totalSec % 60);
+}
+
 void ClockActivity::render(RenderLock&&) {
   renderer.clearScreen();
 
@@ -355,29 +535,92 @@ void ClockActivity::render(RenderLock&&) {
   const auto& metrics = UITheme::getInstance().getMetrics();
 
   // Header Title
-  GUI.drawHeader(renderer, Rect{0, metrics.topPadding, pageWidth, metrics.headerHeight}, "Clock");
+  GUI.drawHeader(renderer, Rect{0, metrics.topPadding, pageWidth, metrics.headerHeight}, tr(STR_CLOCK));
 
-  const int contentTop = metrics.topPadding + metrics.headerHeight + metrics.verticalSpacing;
+  int contentTop = metrics.topPadding + metrics.headerHeight + metrics.verticalSpacing;
   const int contentBottom = pageHeight - metrics.buttonHintsHeight - metrics.verticalSpacing;
-  const int contentHeight = contentBottom - contentTop;
 
-  uint8_t h, m;
-  getLocalTime(h, m);
+  const bool isStopwatch = (mode == ClockMode::Stopwatch);
+  const bool isTimer = (mode == ClockMode::Timer);
+
+  if (isStopwatch || isTimer) {
+    // Stopwatch/Timer both render as plain MM:SS block digits, so — unlike
+    // Analog/Digital/Flip, which are visually distinct from each other — they
+    // need an explicit label to tell them apart, plus a running/paused status.
+    const int subHeaderHeight = 30;
+    const char* title = isStopwatch ? tr(STR_CLOCK_STOPWATCH_TITLE) : tr(STR_CLOCK_TIMER_TITLE);
+    const char* status;
+    if (isTimer && timerFinished) {
+      status = tr(STR_CLOCK_TIME_UP);
+    } else {
+      bool running = isStopwatch ? stopwatchRunning : timerRunning;
+      status = running ? tr(STR_CLOCK_RUNNING) : tr(STR_CLOCK_PAUSED);
+    }
+    GUI.drawSubHeader(renderer, Rect{0, contentTop, pageWidth, subHeaderHeight}, title, status);
+    contentTop += subHeaderHeight + metrics.verticalSpacing;
+  }
+
+  const int contentHeight = contentBottom - contentTop;
 
   // Mode specific drawing
   switch (mode) {
-    case ClockMode::Analog:
+    case ClockMode::Analog: {
+      uint8_t h, m;
+      getLocalTime(h, m);
       drawAnalogClock(metrics, contentTop, contentHeight, pageWidth, h, m);
       break;
-    case ClockMode::Digital:
+    }
+    case ClockMode::Digital: {
+      uint8_t h, m;
+      getLocalTime(h, m);
       drawDigitalClock(metrics, contentTop, contentHeight, pageWidth, h, m);
       break;
-    case ClockMode::Flip:
+    }
+    case ClockMode::Flip: {
+      uint8_t h, m;
+      getLocalTime(h, m);
       drawFlipClock(metrics, contentTop, contentHeight, pageWidth, h, m);
+      break;
+    }
+    case ClockMode::Stopwatch:
+      drawStopwatch(contentTop, contentHeight, pageWidth);
+      break;
+    case ClockMode::Timer:
+      drawTimer(contentTop, contentHeight, pageWidth);
       break;
   }
 
+  if (isTimer && timerFinished) {
+    GUI.drawPopup(renderer, tr(STR_CLOCK_TIME_UP));
+  }
+
   // Draw bottom hints
-  const auto labels = mappedInput.mapLabels("Back", use12Hour ? "24H Mode" : "12H Mode", "Prev Mode", "Next Mode");
+  const char* confirmLabel;
+  if (isStopwatch) {
+    confirmLabel = stopwatchRunning ? tr(STR_CLOCK_PAUSE) : (stopwatchElapsedMs > 0 ? tr(STR_CLOCK_RESUME) : tr(STR_CLOCK_START));
+  } else if (isTimer) {
+    if (timerFinished) {
+      confirmLabel = tr(STR_CLOCK_DISMISS);
+    } else if (timerRunning) {
+      confirmLabel = tr(STR_CLOCK_PAUSE);
+    } else if (timerRemainingSec < timerDurationSec) {
+      confirmLabel = tr(STR_CLOCK_RESUME);
+    } else {
+      confirmLabel = tr(STR_CLOCK_START);
+    }
+  } else {
+    confirmLabel = use12Hour ? tr(STR_CLOCK_FORMAT_24H) : tr(STR_CLOCK_FORMAT_12H);
+  }
+
+  // Prev/Next hints name the mode they'll actually switch to, not a generic
+  // "prev/next mode" — Stopwatch and Timer especially need this since nothing
+  // else on screen tells them apart from each other at a glance.
+  const ClockMode prevMode = static_cast<ClockMode>((static_cast<int>(mode) + MODE_COUNT - 1) % MODE_COUNT);
+  const ClockMode nextMode = static_cast<ClockMode>((static_cast<int>(mode) + 1) % MODE_COUNT);
+
+  const auto labels =
+      mappedInput.mapLabels(tr(STR_BACK), confirmLabel, modeShortName(prevMode), modeShortName(nextMode));
   GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
+
+  renderer.displayBuffer();
 }

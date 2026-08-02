@@ -778,9 +778,6 @@ void TxtReaderActivity::renderPage() {
   // Render text lines with alignment
   auto renderLines = [&]() {
     int y = cachedOrientedMarginTop;
-    bool isFormatted = FsHelpers::hasMarkdownExtension(txt->getPath()) ||
-                       FsHelpers::checkFileExtension(txt->getPath(), ".html") ||
-                       FsHelpers::checkFileExtension(txt->getPath(), ".htm");
 
     for (const auto& rawLine : currentPageLines) {
       if (rawLine.empty()) {
@@ -788,6 +785,14 @@ void TxtReaderActivity::renderPage() {
         continue;
       }
 
+      // loadPageAtOffset() always prepends a 1-byte line-type marker — for
+      // plain .txt it's always '\7' (matches none of the cases below and
+      // falls through to plain REGULAR styling), for Markdown/HTML it can be
+      // '\1'-'\6'. Stripping it is NOT conditional on file type: every line,
+      // from every source format, carries one and must have it removed
+      // before the raw byte gets drawn as text (it used to only strip it for
+      // Markdown/HTML, leaving a stray control-character glyph on every line
+      // of a plain .txt file).
       std::string line = rawLine;
       EpdFontFamily::Style style = EpdFontFamily::REGULAR;
       int indent = 0;
@@ -795,24 +800,22 @@ void TxtReaderActivity::renderPage() {
       bool isHR = false;
       bool isQuote = false;
 
-      if (isFormatted) {
-        char type = line[0];
-        line = line.substr(1);
+      char type = line[0];
+      line = line.substr(1);
 
-        if (type == '\1') { // H1
-          style = EpdFontFamily::BOLD;
-          isH1 = true;
-        } else if (type == '\2' || type == '\3') { // H2, H3
-          style = EpdFontFamily::BOLD;
-        } else if (type == '\4') { // Quote
-          style = EpdFontFamily::ITALIC;
-          indent = 15;
-          isQuote = true;
-        } else if (type == '\5') { // Bullet
-          indent = 15;
-        } else if (type == '\6') { // HR
-          isHR = true;
-        }
+      if (type == '\1') { // H1
+        style = EpdFontFamily::BOLD;
+        isH1 = true;
+      } else if (type == '\2' || type == '\3') { // H2, H3
+        style = EpdFontFamily::BOLD;
+      } else if (type == '\4') { // Quote
+        style = EpdFontFamily::ITALIC;
+        indent = 15;
+        isQuote = true;
+      } else if (type == '\5') { // Bullet
+        indent = 15;
+      } else if (type == '\6') { // HR
+        isHR = true;
       }
 
       if (isHR) {

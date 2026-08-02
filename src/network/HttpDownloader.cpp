@@ -21,11 +21,6 @@ namespace {
 // only carries our GET; the body streams in READ_CHUNK pieces.
 constexpr int HTTP_RX_BUF = 4096;
 constexpr int HTTP_TX_BUF = 1024;
-// Per-socket-op timeout. Some OPDS download endpoints are slow to send headers
-// (>15s) and chunked catalogs stall mid-body, so 15s killed them. 60s gives
-// slow servers room. esp_http_client's timeout_ms is uint32, so unlike Arduino
-// HTTPClient's uint16 setTimeout it doesn't silently truncate.
-constexpr int HTTP_TIMEOUT_MS = 60000;
 constexpr size_t READ_CHUNK = 2048;
 
 struct Sink {
@@ -77,7 +72,8 @@ std::string resolveRedirectUrl(const std::string& base, const std::string& redir
 // large/slow files and surfaces a short read directly.
 HttpDownloader::DownloadError runGet(const std::string& url, const std::string& username, const std::string& password,
                                      Sink& sink, std::string* outContentType = nullptr, std::string* outFinalUrl = nullptr,
-                                     std::string* outErrorDetail = nullptr) {
+                                     std::string* outErrorDetail = nullptr,
+                                     uint32_t timeoutMs = HttpDownloader::kDefaultTimeoutMs) {
   std::string currentUrl = url;
   int hop = 0;
   esp_http_client_handle_t client = nullptr;
@@ -90,7 +86,12 @@ HttpDownloader::DownloadError runGet(const std::string& url, const std::string& 
     config.url = currentUrl.c_str();
     config.buffer_size = HTTP_RX_BUF;
     config.buffer_size_tx = HTTP_TX_BUF;
-    config.timeout_ms = HTTP_TIMEOUT_MS;
+    // Some OPDS download endpoints are slow to send headers (>15s) and chunked
+    // catalogs stall mid-body; callers with their own retry loop (small JSON
+    // list fetches) pass a shorter timeoutMs so a cooperative cancelFlag is
+    // checked often enough. esp_http_client's timeout_ms is uint32, so unlike
+    // Arduino HTTPClient's uint16 setTimeout it doesn't silently truncate.
+    config.timeout_ms = timeoutMs;
     // Verify HTTPS against the bundled CA roots.
     config.crt_bundle_attach = esp_crt_bundle_attach;
     config.keep_alive_enable = true;
@@ -245,7 +246,7 @@ HttpDownloader::DownloadError HttpDownloader::downloadToFile(const std::string& 
                                                              ProgressCallback progress, bool* cancelFlag,
                                                              const std::string& username, const std::string& password,
                                                              std::string* outContentType, std::string* outFinalUrl,
-                                                             std::string* outErrorDetail) {
+                                                             std::string* outErrorDetail, uint32_t timeoutMs) {
   LOG_DBG("HTTP", "Downloading: %s -> %s", url.c_str(), destPath.c_str());
 
   {
@@ -271,7 +272,8 @@ HttpDownloader::DownloadError HttpDownloader::downloadToFile(const std::string& 
     return file.write(data, len) == len;
   };
 
-  const DownloadError result = runGet(url, username, password, sink, outContentType, outFinalUrl, outErrorDetail);
+  const DownloadError result =
+      runGet(url, username, password, sink, outContentType, outFinalUrl, outErrorDetail, timeoutMs);
   // Close before any remove() on the same path; DESTRUCTOR_CLOSES_FILE would
   // otherwise close only after the remove.
   {

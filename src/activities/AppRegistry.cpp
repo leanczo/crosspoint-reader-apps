@@ -2,6 +2,7 @@
 #include "activities/calculator/CalculatorActivity.h"
 #include "activities/calendar/CalendarActivity.h"
 #include "activities/chess/ChessActivity.h"
+#include "activities/clock/ClockActivity.h"
 #include "activities/dice/DiceActivity.h"
 #include "activities/duckduckgo/DuckDuckGoActivity.h"
 #include "activities/football/FootballActivity.h"
@@ -9,7 +10,8 @@
 #include "activities/game2048/Game2048Activity.h"
 #include "activities/hackernews/HackerNewsActivity.h"
 #include "activities/home/AppFolderActivity.h"
-#include "activities/map/MapActivity.h"
+#include "activities/minesweeper/MinesweeperActivity.h"
+#include "activities/simon/SimonActivity.h"
 #include "activities/rss/RssActivity.h"
 #include "activities/snake/SnakeActivity.h"
 #include "activities/sudoku/SudokuActivity.h"
@@ -19,6 +21,7 @@
 
 // System Activities
 #include "I18n.h"
+#include "HalStorage.h"
 #include "OpdsServerStore.h"
 #include "activities/browser/OpdsBookBrowserActivity.h"
 #include "activities/home/FileBrowserActivity.h"
@@ -136,6 +139,20 @@ AppRegistry::AppRegistry() {
         return std::make_unique<Game2048Activity>(r, i);
       }));
 
+  // Minesweeper App
+  gamesApps.push_back(std::make_unique<App>(
+      []() { return tr(STR_MINESWEEPER_TITLE); }, UIIcon::Minesweeper,
+      [](GfxRenderer &r, MappedInputManager &i) {
+        return std::make_unique<MinesweeperActivity>(r, i);
+      }));
+
+  // Simon App
+  gamesApps.push_back(std::make_unique<App>(
+      []() { return tr(STR_SIMON_TITLE); }, UIIcon::Simon,
+      [](GfxRenderer &r, MappedInputManager &i) {
+        return std::make_unique<SimonActivity>(r, i);
+      }));
+
   // --- Entertainment ---
 
   // Wikipedia App
@@ -201,11 +218,11 @@ AppRegistry::AppRegistry() {
         return std::make_unique<CalendarActivity>(r, i);
       }));
 
-  // Map App
+  // Clock App
   toolsApps.push_back(std::make_unique<App>(
-      []() { return tr(STR_MAP_TITLE); }, UIIcon::Map,
+      []() { return tr(STR_CLOCK); }, UIIcon::Clock,
       [](GfxRenderer &r, MappedInputManager &i) {
-        return std::make_unique<MapActivity>(r, i);
+        return std::make_unique<ClockActivity>(r, i);
       }));
 }
 

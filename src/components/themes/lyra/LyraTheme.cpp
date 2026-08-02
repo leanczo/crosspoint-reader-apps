@@ -54,12 +54,14 @@
 #include "components/icons/football24.h"
 #include "components/icons/calendar.h"
 #include "components/icons/calendar24.h"
-#include "components/icons/map.h"
-#include "components/icons/map24.h"
 #include "components/icons/merge.h"
 #include "components/icons/merge24.h"
 #include "components/icons/hackernews.h"
 #include "components/icons/hackernews24.h"
+#include "components/icons/minesweeper.h"
+#include "components/icons/minesweeper24.h"
+#include "components/icons/simon.h"
+#include "components/icons/simon24.h"
 #include "fontIds.h"
 
 
@@ -115,12 +117,14 @@ const uint8_t* iconForName(UIIcon icon, int size) {
         return Football24Icon;
       case UIIcon::Calendar:
         return Calendar24Icon;
-      case UIIcon::Map:
-        return Map24Icon;
       case UIIcon::Game2048:
         return Merge24Icon;
       case UIIcon::HackerNews:
         return Hackernews24Icon;
+      case UIIcon::Minesweeper:
+        return Minesweeper24Icon;
+      case UIIcon::Simon:
+        return Simon24Icon;
       default:
         return nullptr;
     }
@@ -170,12 +174,14 @@ const uint8_t* iconForName(UIIcon icon, int size) {
         return FootballIcon;
       case UIIcon::Calendar:
         return CalendarIcon;
-      case UIIcon::Map:
-        return MapIcon;
       case UIIcon::Game2048:
         return MergeIcon;
       case UIIcon::HackerNews:
         return HackernewsIcon;
+      case UIIcon::Minesweeper:
+        return MinesweeperIcon;
+      case UIIcon::Simon:
+        return SimonIcon;
       default:
         return nullptr;
     }
@@ -416,7 +422,7 @@ void LyraTheme::drawList(const GfxRenderer& renderer, Rect rect, int itemCount, 
 }
 
 void LyraTheme::drawButtonHints(GfxRenderer& renderer, const char* btn1, const char* btn2, const char* btn3,
-                                const char* btn4) const {
+                                const char* btn4, ButtonArrow arrow3, ButtonArrow arrow4) const {
   const GfxRenderer::Orientation orig_orientation = renderer.getOrientation();
   renderer.setOrientation(GfxRenderer::Orientation::Portrait);
 
@@ -431,6 +437,7 @@ void LyraTheme::drawButtonHints(GfxRenderer& renderer, const char* btn1, const c
   constexpr int x3ButtonPositions[] = {65, 157, 291, 383};
   const int* buttonPositions = gpio.deviceIsX3() ? x3ButtonPositions : x4ButtonPositions;
   const char* labels[] = {btn1, btn2, btn3, btn4};
+  const ButtonArrow arrows[] = {ButtonArrow::None, ButtonArrow::None, arrow3, arrow4};
 
   for (int i = 0; i < 4; i++) {
     const int x = buttonPositions[i];
@@ -439,9 +446,13 @@ void LyraTheme::drawButtonHints(GfxRenderer& renderer, const char* btn1, const c
       renderer.fillRoundedRect(x, pageHeight - buttonY, buttonWidth, buttonHeight, cornerRadius, Color::White);
       renderer.drawRoundedRect(x, pageHeight - buttonY, buttonWidth, buttonHeight, 1, cornerRadius, true, true, false,
                                false, true);
-      const int textWidth = renderer.getTextWidth(SMALL_FONT_ID, labels[i]);
-      const int textX = x + (buttonWidth - 1 - textWidth) / 2;
-      renderer.drawText(SMALL_FONT_ID, textX, pageHeight - buttonY + textYOffset, labels[i]);
+      if (arrows[i] != ButtonArrow::None) {
+        drawArrowGlyph(renderer, x + buttonWidth / 2, pageHeight - buttonY + buttonHeight / 2, arrows[i]);
+      } else {
+        const int textWidth = renderer.getTextWidth(SMALL_FONT_ID, labels[i]);
+        const int textX = x + (buttonWidth - 1 - textWidth) / 2;
+        renderer.drawText(SMALL_FONT_ID, textX, pageHeight - buttonY + textYOffset, labels[i]);
+      }
     } else {
       // Draw the filled background and border for a SMALL-sized button
       renderer.fillRoundedRect(x, pageHeight - smallButtonHeight, buttonWidth, smallButtonHeight, cornerRadius,
