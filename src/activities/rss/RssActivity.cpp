@@ -1,4 +1,15 @@
 #include "RssActivity.h"
+
+#include <Arduino.h>
+#include <HalStorage.h>
+#include <I18n.h>
+#include <Logging.h>
+#include <WiFi.h>
+#include <XmlParserUtils.h>
+
+#include <algorithm>
+#include <cctype>
+
 #include "SilentRestart.h"
 #include "activities/ActivityManager.h"
 #include "activities/network/WifiSelectionActivity.h"
@@ -10,31 +21,26 @@
 #include "components/UITheme.h"
 #include "fontIds.h"
 #include "network/HttpDownloader.h"
-#include <Arduino.h>
-#include <HalStorage.h>
-#include <I18n.h>
-#include <Logging.h>
-#include <WiFi.h>
-#include <XmlParserUtils.h>
-#include <algorithm>
-#include <cctype>
 
 namespace {
 
-size_t findCaseInsensitive(const std::string &str, const std::string &search,
-                           size_t pos = 0) {
-  if (search.empty() || str.empty() || pos >= str.length())
-    return std::string::npos;
-  auto it = std::search(str.begin() + pos, str.end(), search.begin(),
-                        search.end(), [](char ch1, char ch2) {
-                          return std::tolower(ch1) == std::tolower(ch2);
-                        });
-  if (it == str.end())
-    return std::string::npos;
+// Selectable font sizes for the article detail view, cycled with Left/Right.
+// Index 1 (14pt) is the default -- noticeably larger than the 8pt SMALL_FONT_ID
+// previously used for article bodies.
+constexpr int kRssArticleFontIds[] = {NOTOSANS_12_FONT_ID, NOTOSANS_14_FONT_ID, NOTOSANS_16_FONT_ID,
+                                      NOTOSANS_18_FONT_ID};
+constexpr size_t kRssArticleFontCount = sizeof(kRssArticleFontIds) / sizeof(kRssArticleFontIds[0]);
+constexpr uint8_t kRssDefaultArticleFontIndex = 1;
+
+size_t findCaseInsensitive(const std::string& str, const std::string& search, size_t pos = 0) {
+  if (search.empty() || str.empty() || pos >= str.length()) return std::string::npos;
+  auto it = std::search(str.begin() + pos, str.end(), search.begin(), search.end(),
+                        [](char ch1, char ch2) { return std::tolower(ch1) == std::tolower(ch2); });
+  if (it == str.end()) return std::string::npos;
   return std::distance(str.begin(), it);
 }
 
-std::string unescapeHtml(const std::string &input) {
+std::string unescapeHtml(const std::string& input) {
   std::string output = input;
   size_t pos;
   while ((pos = output.find("&amp;")) != std::string::npos) {
@@ -58,7 +64,7 @@ std::string unescapeHtml(const std::string &input) {
   return output;
 }
 
-std::string stripHtmlTags(const std::string &input) {
+std::string stripHtmlTags(const std::string& input) {
   std::string output = "";
   bool inTag = false;
   for (char c : input) {
@@ -73,7 +79,7 @@ std::string stripHtmlTags(const std::string &input) {
   return output;
 }
 
-std::string cleanField(const std::string &input) {
+std::string cleanField(const std::string& input) {
   std::string clean = "";
   clean.reserve(input.length());
 
@@ -91,8 +97,7 @@ std::string cleanField(const std::string &input) {
       while (j < input.length() && j - i < 8) {
         char ec = input[j];
         entity += ec;
-        if (ec == ';')
-          break;
+        if (ec == ';') break;
         j++;
       }
 
@@ -159,9 +164,8 @@ std::string cleanField(const std::string &input) {
   return clean;
 }
 
-uint32_t parseRssDateToUnix(const std::string &dateStr) {
-  if (dateStr.empty())
-    return 0;
+uint32_t parseRssDateToUnix(const std::string& dateStr) {
+  if (dateStr.empty()) return 0;
 
   int year = 1970, month = 1, day = 1;
   int hour = 0, minute = 0, second = 0;
@@ -176,8 +180,7 @@ uint32_t parseRssDateToUnix(const std::string &dateStr) {
       second = std::atoi(dateStr.substr(17, 2).c_str());
     }
   } else {
-    const char *months[] = {"Jan", "Feb", "Mar", "Apr", "May", "Jun",
-                            "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"};
+    const char* months[] = {"Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"};
     size_t mPos = std::string::npos;
     int mIdx = 0;
     for (int i = 0; i < 12; i++) {
@@ -206,13 +209,10 @@ uint32_t parseRssDateToUnix(const std::string &dateStr) {
 
       std::string yearStr = "";
       size_t yp = mPos + 3;
-      while (yp < dateStr.length() &&
-             !std::isdigit(static_cast<unsigned char>(dateStr[yp]))) {
+      while (yp < dateStr.length() && !std::isdigit(static_cast<unsigned char>(dateStr[yp]))) {
         yp++;
       }
-      while (yp < dateStr.length() &&
-             std::isdigit(static_cast<unsigned char>(dateStr[yp])) &&
-             yearStr.length() < 4) {
+      while (yp < dateStr.length() && std::isdigit(static_cast<unsigned char>(dateStr[yp])) && yearStr.length() < 4) {
         yearStr += dateStr[yp];
         yp++;
       }
@@ -232,19 +232,13 @@ uint32_t parseRssDateToUnix(const std::string &dateStr) {
     }
   }
 
-  if (year < 1970)
-    year = 1970;
-  if (month < 1)
-    month = 1;
-  if (month > 12)
-    month = 12;
-  if (day < 1)
-    day = 1;
-  if (day > 31)
-    day = 31;
+  if (year < 1970) year = 1970;
+  if (month < 1) month = 1;
+  if (month > 12) month = 12;
+  if (day < 1) day = 1;
+  if (day > 31) day = 31;
 
-  static const int daysToMonth[] = {0,   0,   31,  59,  90,  120, 151,
-                                    181, 212, 243, 273, 304, 334};
+  static const int daysToMonth[] = {0, 0, 31, 59, 90, 120, 151, 181, 212, 243, 273, 304, 334};
 
   int leapYears = (year - 1969) / 4 - (year - 1901) / 100 + (year - 1601) / 400;
   long days = (year - 1970) * 365 + leapYears + daysToMonth[month] + (day - 1);
@@ -257,11 +251,10 @@ uint32_t parseRssDateToUnix(const std::string &dateStr) {
   return days * 86400 + hour * 3600 + minute * 60 + second;
 }
 
-std::string sanitizeFilename(const std::string &input) {
+std::string sanitizeFilename(const std::string& input) {
   std::string output = "";
   for (char c : input) {
-    if (std::isalnum(static_cast<unsigned char>(c)) || c == ' ' || c == '_' ||
-        c == '-') {
+    if (std::isalnum(static_cast<unsigned char>(c)) || c == ' ' || c == '_' || c == '-') {
       output += c;
     }
   }
@@ -277,7 +270,7 @@ std::string sanitizeFilename(const std::string &input) {
   return output;
 }
 
-std::string getSanitizedUrlFilename(const std::string &url) {
+std::string getSanitizedUrlFilename(const std::string& url) {
   std::string clean = "";
   for (char c : url) {
     if (std::isalnum(static_cast<unsigned char>(c))) {
@@ -305,12 +298,12 @@ std::string getSanitizedUrlFilename(const std::string &url) {
   return result;
 }
 
-std::string getFriendlyFeedName(const std::string &url) {
+std::string getFriendlyFeedName(const std::string& url) {
   // Get the text from the URL
   std::string text = url;
 
   // Replace all non-alphanumeric characters with spaces
-  for (char &c : text) {
+  for (char& c : text) {
     if (!std::isalnum(static_cast<unsigned char>(c))) {
       c = ' ';
     }
@@ -324,10 +317,8 @@ std::string getFriendlyFeedName(const std::string &url) {
     if (c == ' ') {
       if (!currentWord.empty()) {
         std::string loweredWord = currentWord;
-        for (char &wc : loweredWord)
-          wc = std::tolower(wc);
-        if (loweredWord != "http" && loweredWord != "https" &&
-            loweredWord != "www" && loweredWord != "com" &&
+        for (char& wc : loweredWord) wc = std::tolower(wc);
+        if (loweredWord != "http" && loweredWord != "https" && loweredWord != "www" && loweredWord != "com" &&
             loweredWord != "rss" && loweredWord != "xml") {
           words.push_back(currentWord);
         }
@@ -339,19 +330,16 @@ std::string getFriendlyFeedName(const std::string &url) {
   }
   if (!currentWord.empty()) {
     std::string loweredWord = currentWord;
-    for (char &wc : loweredWord)
-      wc = std::tolower(wc);
-    if (loweredWord != "http" && loweredWord != "https" &&
-        loweredWord != "www" && loweredWord != "com" && loweredWord != "rss" &&
-        loweredWord != "xml") {
+    for (char& wc : loweredWord) wc = std::tolower(wc);
+    if (loweredWord != "http" && loweredWord != "https" && loweredWord != "www" && loweredWord != "com" &&
+        loweredWord != "rss" && loweredWord != "xml") {
       words.push_back(currentWord);
     }
   }
 
   std::string friendlyName = "";
   for (size_t i = 0; i < words.size() && i < 3; i++) {
-    if (i > 0)
-      friendlyName += " ";
+    if (i > 0) friendlyName += " ";
     friendlyName += words[i];
   }
 
@@ -362,9 +350,8 @@ std::string getFriendlyFeedName(const std::string &url) {
   return friendlyName;
 }
 
-bool loadSingleItemDetails(const std::string &filepath,
-                           const std::string &targetLink, std::string &outDesc,
-                           std::string &outContent) {
+bool loadSingleItemDetails(const std::string& filepath, const std::string& targetLink, std::string& outDesc,
+                           std::string& outContent) {
   HalFile file;
   if (!Storage.openFileForRead("RSS", filepath, file)) {
     return false;
@@ -452,9 +439,8 @@ bool loadSingleItemDetails(const std::string &filepath,
 }
 
 class RssParser {
-public:
-  RssParser(HalFile &outFile, const std::string &defaultFeedName)
-      : outFile(outFile), defaultFeedName(defaultFeedName) {
+ public:
+  RssParser(HalFile& outFile, const std::string& defaultFeedName) : outFile(outFile), defaultFeedName(defaultFeedName) {
     parser = XML_ParserCreate(nullptr);
     if (parser) {
       XML_SetUserData(parser, this);
@@ -465,12 +451,10 @@ public:
 
   ~RssParser() { destroyXmlParser(parser); }
 
-  bool parseBuffer(const char *data, int len, bool isFinal) {
-    if (!parser)
-      return false;
+  bool parseBuffer(const char* data, int len, bool isFinal) {
+    if (!parser) return false;
     if (XML_Parse(parser, data, len, isFinal) == XML_STATUS_ERROR) {
-      LOG_DBG("RSS", "Parse error: %s at line %lu",
-              XML_ErrorString(XML_GetErrorCode(parser)),
+      LOG_DBG("RSS", "Parse error: %s at line %lu", XML_ErrorString(XML_GetErrorCode(parser)),
               XML_GetCurrentLineNumber(parser));
       return false;
     }
@@ -479,8 +463,8 @@ public:
 
   int getItemsParsed() const { return itemsParsed; }
 
-private:
-  HalFile &outFile;
+ private:
+  HalFile& outFile;
   std::string defaultFeedName;
   XML_Parser parser = nullptr;
 
@@ -490,7 +474,7 @@ private:
   RssItem currentItem;
   int itemsParsed = 0;
 
-  void writeItem(const RssItem &item) {
+  void writeItem(const RssItem& item) {
     outFile.print("## ");
     outFile.print(item.title.c_str());
     outFile.print("\n- Link: ");
@@ -522,13 +506,11 @@ private:
     outFile.print("\n\n");
   }
 
-  static void XMLCALL startElement(void *userData, const XML_Char *name,
-                                   const XML_Char **atts) {
-    auto *self = static_cast<RssParser *>(userData);
+  static void XMLCALL startElement(void* userData, const XML_Char* name, const XML_Char** atts) {
+    auto* self = static_cast<RssParser*>(userData);
     std::string tag(name);
     std::string lowerTag = tag;
-    for (char &c : lowerTag)
-      c = std::tolower(c);
+    for (char& c : lowerTag) c = std::tolower(c);
 
     std::string localTag = lowerTag;
     size_t colonPos = localTag.find(':');
@@ -551,8 +533,7 @@ private:
         std::string rel = "";
         for (int i = 0; atts[i]; i += 2) {
           std::string attName(atts[i]);
-          for (char &c : attName)
-            c = std::tolower(c);
+          for (char& c : attName) c = std::tolower(c);
 
           std::string localAtt = attName;
           size_t attColon = localAtt.find(':');
@@ -564,8 +545,7 @@ private:
             href = atts[i + 1];
           } else if (localAtt == "rel") {
             rel = atts[i + 1];
-            for (char &c : rel)
-              c = std::tolower(c);
+            for (char& c : rel) c = std::tolower(c);
           }
         }
 
@@ -573,8 +553,7 @@ private:
           // If our current link is empty, or we explicitly got an alternate
           // link, prioritize it. Avoid overwriting a valid link with "self" or
           // "enclosure" feed links.
-          if (self->currentItem.link.empty() || rel == "alternate" ||
-              (rel != "self" && rel != "enclosure")) {
+          if (self->currentItem.link.empty() || rel == "alternate" || (rel != "self" && rel != "enclosure")) {
             self->currentItem.link = href;
           }
         }
@@ -582,12 +561,11 @@ private:
     }
   }
 
-  static void XMLCALL endElement(void *userData, const XML_Char *name) {
-    auto *self = static_cast<RssParser *>(userData);
+  static void XMLCALL endElement(void* userData, const XML_Char* name) {
+    auto* self = static_cast<RssParser*>(userData);
     std::string tag(name);
     std::string lowerTag = tag;
-    for (char &c : lowerTag)
-      c = std::tolower(c);
+    for (char& c : lowerTag) c = std::tolower(c);
 
     std::string localTag = lowerTag;
     size_t colonPos = localTag.find(':');
@@ -600,31 +578,24 @@ private:
       if (!self->currentItem.title.empty() && self->itemsParsed < 25) {
         self->currentItem.title = cleanField(self->currentItem.title);
         self->currentItem.link = cleanField(self->currentItem.link);
-        self->currentItem.description =
-            cleanField(self->currentItem.description);
+        self->currentItem.description = cleanField(self->currentItem.description);
         self->currentItem.content = cleanField(self->currentItem.content);
 
         self->writeItem(self->currentItem);
         self->itemsParsed++;
       }
-      self->currentItem = RssItem(); // Clear the strings in currentItem to
-                                     // reclaim heap immediately
+      self->currentItem = RssItem();  // Clear the strings in currentItem to
+                                      // reclaim heap immediately
     } else if (self->inItem) {
       if (localTag == "title") {
-        if (self->currentItem.title.empty())
-          self->currentItem.title = self->currentText;
+        if (self->currentItem.title.empty()) self->currentItem.title = self->currentText;
       } else if (localTag == "link") {
-        if (self->currentItem.link.empty())
-          self->currentItem.link = self->currentText;
+        if (self->currentItem.link.empty()) self->currentItem.link = self->currentText;
       } else if (localTag == "description" || localTag == "summary") {
-        if (self->currentItem.description.empty())
-          self->currentItem.description = self->currentText;
-      } else if (localTag == "content" || localTag == "encoded" ||
-                 lowerTag == "content:encoded") {
-        if (self->currentItem.content.empty())
-          self->currentItem.content = self->currentText;
-      } else if (localTag == "pubdate" || localTag == "updated" ||
-                 localTag == "published" || localTag == "date" ||
+        if (self->currentItem.description.empty()) self->currentItem.description = self->currentText;
+      } else if (localTag == "content" || localTag == "encoded" || lowerTag == "content:encoded") {
+        if (self->currentItem.content.empty()) self->currentItem.content = self->currentText;
+      } else if (localTag == "pubdate" || localTag == "updated" || localTag == "published" || localTag == "date" ||
                  lowerTag == "dc:date") {
         if (self->currentItem.timestamp.empty()) {
           uint32_t ts = parseRssDateToUnix(cleanField(self->currentText));
@@ -637,27 +608,24 @@ private:
     self->currentText.clear();
   }
 
-  static void XMLCALL characterData(void *userData, const XML_Char *s,
-                                    const int len) {
-    auto *self = static_cast<RssParser *>(userData);
+  static void XMLCALL characterData(void* userData, const XML_Char* s, const int len) {
+    auto* self = static_cast<RssParser*>(userData);
     if (self->inItem && !self->currentTag.empty()) {
-      size_t limit = 8192; // Default limit for content
+      size_t limit = 8192;  // Default limit for content
       if (self->currentTag == "description" || self->currentTag == "summary") {
         limit = 2048;
       } else if (self->currentTag == "title" || self->currentTag == "link") {
         limit = 512;
       }
       if (self->currentText.length() < limit) {
-        size_t toAppend = std::min(static_cast<size_t>(len),
-                                   limit - self->currentText.length());
+        size_t toAppend = std::min(static_cast<size_t>(len), limit - self->currentText.length());
         self->currentText.append(s, toAppend);
       }
     }
   }
 };
 
-bool parseXmlFile(const std::string &xmlPath, const std::string &mdPath,
-                  const std::string &defaultFeedName) {
+bool parseXmlFile(const std::string& xmlPath, const std::string& mdPath, const std::string& defaultFeedName) {
   HalFile inFile;
   if (!Storage.openFileForRead("RSS", xmlPath.c_str(), inFile)) {
     return false;
@@ -678,8 +646,7 @@ bool parseXmlFile(const std::string &xmlPath, const std::string &mdPath,
   char buffer[2048];
 
   while (inFile.available() > 0) {
-    int bytesRead =
-        inFile.read(reinterpret_cast<uint8_t *>(buffer), sizeof(buffer));
+    int bytesRead = inFile.read(reinterpret_cast<uint8_t*>(buffer), sizeof(buffer));
     if (bytesRead > 0) {
       if (!parser.parseBuffer(buffer, bytesRead, inFile.available() == 0)) {
         break;
@@ -693,35 +660,31 @@ bool parseXmlFile(const std::string &xmlPath, const std::string &mdPath,
 }
 
 std::string timeAgo(uint32_t timestamp) {
-  if (timestamp == 0)
-    return "";
+  if (timestamp == 0) return "";
   time_t now = time(nullptr);
   if (now < static_cast<time_t>(timestamp)) {
     struct tm tm_info;
     time_t ts = timestamp;
     gmtime_r(&ts, &tm_info);
     char buf[32];
-    snprintf(buf, sizeof(buf), "%02d/%02d %02d:%02d", tm_info.tm_mon + 1,
-             tm_info.tm_mday, tm_info.tm_hour, tm_info.tm_min);
+    snprintf(buf, sizeof(buf), "%02d/%02d %02d:%02d", tm_info.tm_mon + 1, tm_info.tm_mday, tm_info.tm_hour,
+             tm_info.tm_min);
     return buf;
   }
   uint32_t diff = now - timestamp;
-  if (diff < 60)
-    return "just now";
-  if (diff < 3600)
-    return std::to_string(diff / 60) + "m ago";
-  if (diff < 86400)
-    return std::to_string(diff / 3600) + "h ago";
+  if (diff < 60) return "just now";
+  if (diff < 3600) return std::to_string(diff / 60) + "m ago";
+  if (diff < 86400) return std::to_string(diff / 3600) + "h ago";
   return std::to_string(diff / 86400) + "d ago";
 }
 
-static void rssFetchTaskFunc(void *param) {
-  RssActivity *activity = static_cast<RssActivity *>(param);
+static void rssFetchTaskFunc(void* param) {
+  RssActivity* activity = static_cast<RssActivity*>(param);
   activity->runBackgroundFetch();
   vTaskDelete(nullptr);
 }
 
-} // namespace
+}  // namespace
 
 void RssActivity::ensureDirectoriesExist() {
   Storage.ensureDirectoryExists("/apps");
@@ -738,14 +701,11 @@ void RssActivity::loadSubscriptions() {
     subscriptions.push_back("https://www.reddit.com/.rss");
     subscriptions.push_back("https://news.yahoo.com/rss/mostviewed");
     subscriptions.push_back("https://feeds.bbci.co.uk/news/rss.xml");
-    subscriptions.push_back(
-        "https://news.google.com/rss?hl=en-US&gl=US&ceid=US:en");
-    subscriptions.push_back(
-        "https://rss.nytimes.com/services/xml/rss/nyt/HomePage.xml");
-    subscriptions.push_back(
-        "https://rss.nytimes.com/services/xml/rss/nyt/DiningandWine.xml");
+    subscriptions.push_back("https://news.google.com/rss?hl=en-US&gl=US&ceid=US:en");
+    subscriptions.push_back("https://rss.nytimes.com/services/xml/rss/nyt/HomePage.xml");
+    subscriptions.push_back("https://rss.nytimes.com/services/xml/rss/nyt/DiningandWine.xml");
     subscriptions.push_back("https://finance.yahoo.com/news/rssindex");
-    subscriptions.push_back("https://www.eltribuno.com/rss-new/portada.rss");
+    subscriptions.push_back("https://www.eltribuno.com/rss-new/salta.rss");
     subscriptions.push_back("https://psicologiaymente.net/feeds/blog/rss");
     subscriptions.push_back("https://rinconpsicologia.com/feed/");
 
@@ -777,7 +737,7 @@ void RssActivity::loadSubscriptions() {
 void RssActivity::saveSubscriptions() {
   HalFile f;
   if (Storage.openFileForWrite("RSS", "/apps/rss/subscriptions.txt", f)) {
-    for (const auto &sub : subscriptions) {
+    for (const auto& sub : subscriptions) {
       std::string line = sub + "\n";
       f.write(line.c_str(), line.length());
     }
@@ -785,8 +745,29 @@ void RssActivity::saveSubscriptions() {
   }
 }
 
-bool RssActivity::parseFeedsFromMarkdown(const std::string &filepath,
-                                         std::vector<RssItem> &targetList,
+void RssActivity::loadArticleFontSize() {
+  articleFontSizeIndex = kRssDefaultArticleFontIndex;
+  HalFile f;
+  if (Storage.openFileForRead("RSS", "/apps/rss/font_size.txt", f)) {
+    char c = f.available() > 0 ? f.read() : '0';
+    f.close();
+    uint8_t parsed = static_cast<uint8_t>(c - '0');
+    if (parsed < kRssArticleFontCount) {
+      articleFontSizeIndex = parsed;
+    }
+  }
+}
+
+void RssActivity::saveArticleFontSize() {
+  HalFile f;
+  if (Storage.openFileForWrite("RSS", "/apps/rss/font_size.txt", f)) {
+    char c = static_cast<char>('0' + articleFontSizeIndex);
+    f.write(&c, 1);
+    f.close();
+  }
+}
+
+bool RssActivity::parseFeedsFromMarkdown(const std::string& filepath, std::vector<RssItem>& targetList,
                                          bool summaryOnly) {
   HalFile file;
   if (!Storage.openFileForRead("RSS", filepath, file)) {
@@ -904,12 +885,19 @@ bool RssActivity::loadOfflineFeeds() {
   bool success = parseFeedsFromMarkdown(filepath, allItems, true);
   if (success) {
     // Sort globally by timestamp descending
-    std::sort(allItems.begin(), allItems.end(),
-              [](const RssItem &a, const RssItem &b) {
-                return atoll(a.timestamp.c_str()) > atoll(b.timestamp.c_str());
-              });
+    std::sort(allItems.begin(), allItems.end(), [](const RssItem& a, const RssItem& b) {
+      return atoll(a.timestamp.c_str()) > atoll(b.timestamp.c_str());
+    });
   }
   return success && !allItems.empty();
+}
+
+void RssActivity::writeDebugLog(const std::string& contents) {
+  ensureDirectoriesExist();
+  HalFile f;
+  if (Storage.openFileForWrite("RSS", "/apps/rss/rss_debug.log", f)) {
+    f.print(contents.c_str());
+  }
 }
 
 void RssActivity::runBackgroundFetch() {
@@ -918,6 +906,7 @@ void RssActivity::runBackgroundFetch() {
 
   bool anySuccess = false;
   std::vector<RssItem> aggregatedItems;
+  std::string debugLog;
 
   if (WiFi.status() == WL_CONNECTED) {
     if (!WifiConnectHelper::waitForTimeSync()) {
@@ -932,22 +921,33 @@ void RssActivity::runBackgroundFetch() {
 
       Storage.remove(xmlPath.c_str());
 
+      debugLog += "Fetching: " + url + "\n";
+
       int fetchRetries = 3;
       bool fetchSuccess = false;
+      int attempt = 0;
 
       while (fetchRetries > 0 && !cancelFetch) {
+        attempt++;
         std::string errorDetail;
-        auto res = HttpDownloader::downloadToFile(url, xmlPath, nullptr,
-                                                  &cancelFetch, "", "", nullptr,
-                                                  nullptr, &errorDetail);
+        std::string finalUrl;
+        auto res = HttpDownloader::downloadToFile(url, xmlPath, nullptr, &cancelFetch, "", "", nullptr, &finalUrl,
+                                                  &errorDetail);
+        debugLog += "  Attempt " + std::to_string(attempt) + ": result=" + std::to_string(static_cast<int>(res));
+        if (!finalUrl.empty() && finalUrl != url) {
+          debugLog += " finalUrl=" + finalUrl;
+        }
+        if (!errorDetail.empty()) {
+          debugLog += " detail=" + errorDetail;
+        }
+        debugLog += "\n";
         if (res == HttpDownloader::OK) {
           fetchSuccess = true;
           break;
         } else if (res == HttpDownloader::ABORTED) {
           break;
         } else {
-          errorMessage = "HTTP Error " + std::to_string(res) + ": " +
-                         (errorDetail.empty() ? "Unknown" : errorDetail);
+          errorMessage = "HTTP Error " + std::to_string(res) + ": " + (errorDetail.empty() ? "Unknown" : errorDetail);
         }
         fetchRetries--;
         if (fetchRetries > 0 && !cancelFetch) {
@@ -958,13 +958,19 @@ void RssActivity::runBackgroundFetch() {
         std::string friendlyName = getFriendlyFeedName(url);
         std::string mdPath = "/apps/rss/" + filename + ".md";
         ensureDirectoriesExist();
-        if (parseXmlFile(xmlPath, mdPath, friendlyName)) {
+        bool parsed = parseXmlFile(xmlPath, mdPath, friendlyName);
+        debugLog += "Parse: " + std::string(parsed ? "OK" : "FAILED") + "\n";
+        if (parsed) {
           anySuccess = true;
         }
         Storage.remove(xmlPath.c_str());
       }
     }
+  } else {
+    debugLog += "WiFi not connected\n";
   }
+
+  writeDebugLog(debugLog);
 
   DownloadWatchdog::stop();
   if (DownloadWatchdog::gotTimeout) {
@@ -987,13 +993,23 @@ void RssActivity::runBackgroundFetch() {
 }
 
 void RssActivity::downloadActivePost() {
-  if (selectedItemIndex < 0 ||
-      selectedItemIndex >= static_cast<int>(allItems.size())) {
+  if (selectedItemIndex < 0 || selectedItemIndex >= static_cast<int>(allItems.size())) {
     return;
   }
 
   std::string downloadUrl = allItems[selectedItemIndex].link;
   std::string downloadTitle = allItems[selectedItemIndex].title;
+
+  // www.reddit.com serves post/comment pages behind a JS bot-challenge to any
+  // non-browser HTTP client (no content, just a "solution"/"js_challenge" form).
+  // old.reddit.com serves the same content fully server-rendered, so rewrite
+  // reddit.com links to it before downloading.
+  for (const std::string& prefix : {std::string("https://www.reddit.com/"), std::string("https://reddit.com/")}) {
+    if (downloadUrl.rfind(prefix, 0) == 0) {
+      downloadUrl = "https://old.reddit.com/" + downloadUrl.substr(prefix.length());
+      break;
+    }
+  }
 
   // Clear the items list and shrink to fit to free up massive heap RAM
   allItems.clear();
@@ -1011,12 +1027,21 @@ void RssActivity::downloadActivePost() {
 
     bool success = false;
     int retries = 3;
+    int attempt = 0;
+    std::string debugLog = "Visit Link: " + downloadUrl + "\n";
 
     while (retries > 0) {
       GUI.drawPopup(renderer, "Downloading...");
 
-      auto result = HttpDownloader::downloadToFile(
-          downloadUrl.c_str(), tempPath.c_str(), nullptr, nullptr, "", "");
+      attempt++;
+      std::string errorDetail;
+      std::string finalUrl;
+      auto result = HttpDownloader::downloadToFile(downloadUrl.c_str(), tempPath.c_str(), nullptr, nullptr, "", "",
+                                                   nullptr, &finalUrl, &errorDetail);
+      debugLog += "  Attempt " + std::to_string(attempt) + ": result=" + std::to_string(static_cast<int>(result));
+      if (!finalUrl.empty() && finalUrl != downloadUrl) debugLog += " finalUrl=" + finalUrl;
+      if (!errorDetail.empty()) debugLog += " detail=" + errorDetail;
+      debugLog += "\n";
       if (result == HttpDownloader::OK) {
         success = true;
         break;
@@ -1026,6 +1051,7 @@ void RssActivity::downloadActivePost() {
         delay(1000);
       }
     }
+    writeDebugLog(debugLog);
 
     if (success) {
       std::string ext = ".html";
@@ -1039,8 +1065,7 @@ void RssActivity::downloadActivePost() {
       bool isTxt = false;
       if (urlToCheck.length() >= 4) {
         std::string urlExt = urlToCheck.substr(urlToCheck.length() - 4);
-        for (char &c : urlExt)
-          c = tolower(c);
+        for (char& c : urlExt) c = tolower(c);
         if (urlExt == ".txt") {
           isTxt = true;
         }
@@ -1063,11 +1088,10 @@ void RssActivity::downloadActivePost() {
       loadOfflineFeeds();
       if (state == RssState::PostDetail && selectedItemIndex >= 0 &&
           selectedItemIndex < static_cast<int>(allItems.size())) {
-        const auto &item = allItems[selectedItemIndex];
+        const auto& item = allItems[selectedItemIndex];
         std::string filename = getSanitizedUrlFilename(activeFeed);
         std::string filepath = "/apps/rss/" + filename + ".md";
-        loadSingleItemDetails(filepath, item.link,
-                              allItems[selectedItemIndex].description,
+        loadSingleItemDetails(filepath, item.link, allItems[selectedItemIndex].description,
                               allItems[selectedItemIndex].content);
       }
 
@@ -1077,11 +1101,10 @@ void RssActivity::downloadActivePost() {
       loadOfflineFeeds();
       if (state == RssState::PostDetail && selectedItemIndex >= 0 &&
           selectedItemIndex < static_cast<int>(allItems.size())) {
-        const auto &item = allItems[selectedItemIndex];
+        const auto& item = allItems[selectedItemIndex];
         std::string filename = getSanitizedUrlFilename(activeFeed);
         std::string filepath = "/apps/rss/" + filename + ".md";
-        loadSingleItemDetails(filepath, item.link,
-                              allItems[selectedItemIndex].description,
+        loadSingleItemDetails(filepath, item.link, allItems[selectedItemIndex].description,
                               allItems[selectedItemIndex].content);
       }
 
@@ -1096,11 +1119,10 @@ void RssActivity::downloadActivePost() {
     loadOfflineFeeds();
     if (state == RssState::PostDetail && selectedItemIndex >= 0 &&
         selectedItemIndex < static_cast<int>(allItems.size())) {
-      const auto &item = allItems[selectedItemIndex];
+      const auto& item = allItems[selectedItemIndex];
       std::string filename = getSanitizedUrlFilename(activeFeed);
       std::string filepath = "/apps/rss/" + filename + ".md";
-      loadSingleItemDetails(filepath, item.link,
-                            allItems[selectedItemIndex].description,
+      loadSingleItemDetails(filepath, item.link, allItems[selectedItemIndex].description,
                             allItems[selectedItemIndex].content);
     }
     requestUpdate();
@@ -1111,6 +1133,7 @@ void RssActivity::onEnter() {
   Activity::onEnter();
   ensureDirectoriesExist();
   loadSubscriptions();
+  loadArticleFontSize();
 
   state = RssState::FeedSelection;
   activeFeed = "";
@@ -1193,7 +1216,7 @@ void RssActivity::loop() {
     } else if (state == RssState::FeedSelection) {
       finish();
     } else if (state == RssState::PostDetail) {
-      loadOfflineFeeds(); // Free RAM by reloading summary-only feed list
+      loadOfflineFeeds();  // Free RAM by reloading summary-only feed list
       state = RssState::FeedList;
       requestUpdate();
     }
@@ -1201,8 +1224,7 @@ void RssActivity::loop() {
   }
 
   if (state == RssState::FeedSelection) {
-    int totalItems = static_cast<int>(subscriptions.size()) +
-                     1; // subscriptions + Add RSS URL
+    int totalItems = static_cast<int>(subscriptions.size()) + 1;  // subscriptions + Add RSS URL
     if (mappedInput.wasReleased(MappedInputManager::Button::Up)) {
       selectedSubIndex = (selectedSubIndex - 1 + totalItems) % totalItems;
       requestUpdate();
@@ -1212,60 +1234,54 @@ void RssActivity::loop() {
     } else if (mappedInput.wasReleased(MappedInputManager::Button::Confirm)) {
       if (selectedSubIndex == totalItems - 1) {
         // [+ Add RSS URL]
-        auto keyboard = std::make_unique<KeyboardEntryActivity>(
-            renderer, mappedInput, "Add RSS URL", "https://", 150);
-        startActivityForResult(
-            std::move(keyboard), [this](const ActivityResult &result) {
-              if (!result.isCancelled) {
-                auto keyboardResult = std::get_if<KeyboardResult>(&result.data);
-                if (keyboardResult && !keyboardResult->text.empty() &&
-                    keyboardResult->text != "https://") {
-                  std::string url = keyboardResult->text;
-                  if (std::find(subscriptions.begin(), subscriptions.end(),
-                                url) == subscriptions.end()) {
-                    subscriptions.push_back(url);
-                    saveSubscriptions();
-                  }
-                  activeFeed = url;
-                  bool hasCache = loadOfflineFeeds();
-                  selectedItemIndex = 0;
-                  itemsScrollOffset = 0;
-                  errorMessage = "";
-                  if (hasCache) {
-                    state = RssState::FeedList;
-                    isRefreshing = true;
-                    requestUpdate();
-                    ensureWifiConnected(
-                        [this]() {
-                          wifiWasUsed = true;
-                          xTaskCreate(rssFetchTaskFunc, "rss_fetch", 8192, this,
-                                      5, (TaskHandle_t *)&fetchTaskHandle);
-                        },
-                        [this]() {
-                          isRefreshing = false;
-                          requestUpdate();
-                        });
-                  } else {
-                    state = RssState::Loading;
-                    isRefreshing = true;
-                    requestUpdate();
-                    ensureWifiConnected(
-                        [this]() {
-                          wifiWasUsed = true;
-                          xTaskCreate(rssFetchTaskFunc, "rss_fetch", 8192, this,
-                                      5, (TaskHandle_t *)&fetchTaskHandle);
-                        },
-                        [this]() {
-                          state = RssState::FeedSelection;
-                          isRefreshing = false;
-                          requestUpdate();
-                        });
-                  }
-                  return;
-                }
+        auto keyboard = std::make_unique<KeyboardEntryActivity>(renderer, mappedInput, "Add RSS URL", "https://", 150);
+        startActivityForResult(std::move(keyboard), [this](const ActivityResult& result) {
+          if (!result.isCancelled) {
+            auto keyboardResult = std::get_if<KeyboardResult>(&result.data);
+            if (keyboardResult && !keyboardResult->text.empty() && keyboardResult->text != "https://") {
+              std::string url = keyboardResult->text;
+              if (std::find(subscriptions.begin(), subscriptions.end(), url) == subscriptions.end()) {
+                subscriptions.push_back(url);
+                saveSubscriptions();
               }
-              requestUpdate();
-            });
+              activeFeed = url;
+              bool hasCache = loadOfflineFeeds();
+              selectedItemIndex = 0;
+              itemsScrollOffset = 0;
+              errorMessage = "";
+              if (hasCache) {
+                state = RssState::FeedList;
+                isRefreshing = true;
+                requestUpdate();
+                ensureWifiConnected(
+                    [this]() {
+                      wifiWasUsed = true;
+                      xTaskCreate(rssFetchTaskFunc, "rss_fetch", 8192, this, 5, (TaskHandle_t*)&fetchTaskHandle);
+                    },
+                    [this]() {
+                      isRefreshing = false;
+                      requestUpdate();
+                    });
+              } else {
+                state = RssState::Loading;
+                isRefreshing = true;
+                requestUpdate();
+                ensureWifiConnected(
+                    [this]() {
+                      wifiWasUsed = true;
+                      xTaskCreate(rssFetchTaskFunc, "rss_fetch", 8192, this, 5, (TaskHandle_t*)&fetchTaskHandle);
+                    },
+                    [this]() {
+                      state = RssState::FeedSelection;
+                      isRefreshing = false;
+                      requestUpdate();
+                    });
+              }
+              return;
+            }
+          }
+          requestUpdate();
+        });
       } else {
         if (selectedSubIndex == totalItems - 1) {
           // Add URL
@@ -1289,8 +1305,7 @@ void RssActivity::loop() {
           ensureWifiConnected(
               [this]() {
                 wifiWasUsed = true;
-                xTaskCreate(rssFetchTaskFunc, "rss_fetch", 8192, this, 5,
-                            (TaskHandle_t *)&fetchTaskHandle);
+                xTaskCreate(rssFetchTaskFunc, "rss_fetch", 8192, this, 5, (TaskHandle_t*)&fetchTaskHandle);
               },
               [this]() {
                 state = RssState::FeedSelection;
@@ -1303,10 +1318,9 @@ void RssActivity::loop() {
       // Right button to delete RSS subscription
       if (selectedSubIndex >= 0 && selectedSubIndex < totalItems - 1) {
         std::string subToDelete = subscriptions[selectedSubIndex];
-        auto handler = [this, subToDelete](const ActivityResult &res) {
+        auto handler = [this, subToDelete](const ActivityResult& res) {
           if (!res.isCancelled) {
-            auto it = std::find(subscriptions.begin(), subscriptions.end(),
-                                subToDelete);
+            auto it = std::find(subscriptions.begin(), subscriptions.end(), subToDelete);
             if (it != subscriptions.end()) {
               subscriptions.erase(it);
               saveSubscriptions();
@@ -1319,9 +1333,34 @@ void RssActivity::loop() {
           requestUpdate();
         };
         startActivityForResult(
-            std::make_unique<ConfirmationActivity>(renderer, mappedInput,
-                                                   "Unsubscribe?", subToDelete),
-            handler);
+            std::make_unique<ConfirmationActivity>(renderer, mappedInput, "Unsubscribe?", subToDelete), handler);
+      }
+    } else if (mappedInput.wasReleased(MappedInputManager::Button::Left)) {
+      // Left button to edit the URL of an existing RSS subscription
+      if (selectedSubIndex >= 0 && selectedSubIndex < totalItems - 1) {
+        std::string oldUrl = subscriptions[selectedSubIndex];
+        auto keyboard = std::make_unique<KeyboardEntryActivity>(renderer, mappedInput, "Edit RSS URL", oldUrl, 150);
+        startActivityForResult(std::move(keyboard), [this, oldUrl](const ActivityResult& result) {
+          if (!result.isCancelled) {
+            auto keyboardResult = std::get_if<KeyboardResult>(&result.data);
+            if (keyboardResult && !keyboardResult->text.empty() && keyboardResult->text != oldUrl &&
+                std::find(subscriptions.begin(), subscriptions.end(), keyboardResult->text) == subscriptions.end()) {
+              auto it = std::find(subscriptions.begin(), subscriptions.end(), oldUrl);
+              if (it != subscriptions.end()) {
+                *it = keyboardResult->text;
+                saveSubscriptions();
+                // Old cache is keyed off the old URL's filename hash; drop it so the
+                // edited URL fetches fresh content under its own cache file.
+                std::string oldFilename = getSanitizedUrlFilename(oldUrl);
+                Storage.remove(("/apps/rss/" + oldFilename + ".md").c_str());
+                if (activeFeed == oldUrl) {
+                  activeFeed = keyboardResult->text;
+                }
+              }
+            }
+          }
+          requestUpdate();
+        });
       }
     }
   } else if (state == RssState::FeedList) {
@@ -1332,8 +1371,7 @@ void RssActivity::loop() {
       ensureWifiConnected(
           [this]() {
             wifiWasUsed = true;
-            xTaskCreate(rssFetchTaskFunc, "rss_fetch", 8192, this, 5,
-                        (TaskHandle_t *)&fetchTaskHandle);
+            xTaskCreate(rssFetchTaskFunc, "rss_fetch", 8192, this, 5, (TaskHandle_t*)&fetchTaskHandle);
           },
           [this]() {
             state = RssState::FeedList;
@@ -1350,8 +1388,7 @@ void RssActivity::loop() {
         ensureWifiConnected(
             [this]() {
               wifiWasUsed = true;
-              xTaskCreate(rssFetchTaskFunc, "rss_fetch", 8192, this, 5,
-                          (TaskHandle_t *)&fetchTaskHandle);
+              xTaskCreate(rssFetchTaskFunc, "rss_fetch", 8192, this, 5, (TaskHandle_t*)&fetchTaskHandle);
             },
             [this]() {
               state = RssState::FeedList;
@@ -1379,11 +1416,10 @@ void RssActivity::loop() {
         }
       } else if (mappedInput.wasReleased(MappedInputManager::Button::Left)) {
         // Load details dynamically from the markdown file on disk to save RAM
-        const auto &item = allItems[selectedItemIndex];
+        const auto& item = allItems[selectedItemIndex];
         std::string filename = getSanitizedUrlFilename(activeFeed);
         std::string filepath = "/apps/rss/" + filename + ".md";
-        loadSingleItemDetails(filepath, item.link,
-                              allItems[selectedItemIndex].description,
+        loadSingleItemDetails(filepath, item.link, allItems[selectedItemIndex].description,
                               allItems[selectedItemIndex].content);
 
         state = RssState::PostDetail;
@@ -1404,69 +1440,73 @@ void RssActivity::loop() {
       requestUpdate();
     } else if (mappedInput.wasReleased(MappedInputManager::Button::Confirm)) {
       downloadActivePost();
+    } else if (mappedInput.wasReleased(MappedInputManager::Button::Left)) {
+      if (articleFontSizeIndex > 0) {
+        articleFontSizeIndex--;
+        saveArticleFontSize();
+        requestUpdate();
+      }
+    } else if (mappedInput.wasReleased(MappedInputManager::Button::Right)) {
+      if (articleFontSizeIndex + 1 < kRssArticleFontCount) {
+        articleFontSizeIndex++;
+        saveArticleFontSize();
+        requestUpdate();
+      }
     }
   }
 }
 
-void RssActivity::render(RenderLock &&) {
+void RssActivity::render(RenderLock&&) {
   renderer.clearScreen();
 
   const auto pageWidth = renderer.getScreenWidth();
   const auto pageHeight = renderer.getScreenHeight();
-  const auto &metrics = UITheme::getInstance().getMetrics();
+  const auto& metrics = UITheme::getInstance().getMetrics();
 
   std::string headerTitle = "RSS Feed";
   if (state == RssState::FeedList || state == RssState::Loading) {
     headerTitle = getFriendlyFeedName(activeFeed);
   }
 
-  GUI.drawHeader(renderer,
-                 Rect{0, metrics.topPadding, pageWidth, metrics.headerHeight},
-                 headerTitle.c_str());
+  GUI.drawHeader(renderer, Rect{0, metrics.topPadding, pageWidth, metrics.headerHeight}, headerTitle.c_str());
 
   if (state == RssState::FeedList && isRefreshing) {
-    renderer.drawText(SMALL_FONT_ID, metrics.contentSidePadding,
-                      metrics.topPadding + 5, "Refreshing feed...", true,
+    renderer.drawText(SMALL_FONT_ID, metrics.contentSidePadding, metrics.topPadding + 5, "Refreshing feed...", true,
                       EpdFontFamily::REGULAR);
   }
 
-  const int contentTop =
-      metrics.topPadding + metrics.headerHeight + metrics.verticalSpacing;
-  const int contentBottom =
-      pageHeight - metrics.buttonHintsHeight - metrics.verticalSpacing;
+  const int contentTop = metrics.topPadding + metrics.headerHeight + metrics.verticalSpacing;
+  const int contentBottom = pageHeight - metrics.buttonHintsHeight - metrics.verticalSpacing;
   const int contentHeight = contentBottom - contentTop;
 
   if (state == RssState::Loading) {
-    int textY = contentTop + contentHeight / 2 -
-                renderer.getLineHeight(UI_12_FONT_ID) / 2;
+    int textY = contentTop + contentHeight / 2 - renderer.getLineHeight(UI_12_FONT_ID) / 2;
     renderer.drawCenteredText(UI_12_FONT_ID, textY, "Loading feeds...");
-    const auto labels =
-        mappedInput.mapLabels(tr(STR_BACK), nullptr, nullptr, nullptr);
-    GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3,
-                        labels.btn4);
+    const auto labels = mappedInput.mapLabels(tr(STR_BACK), nullptr, nullptr, nullptr);
+    GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
   } else if (state == RssState::FeedList) {
     if (!errorMessage.empty() && allItems.empty()) {
       int errY = contentTop + 40;
-      renderer.drawCenteredText(UI_10_FONT_ID, errY, errorMessage.c_str(), true,
-                                EpdFontFamily::BOLD);
+      renderer.drawCenteredText(UI_10_FONT_ID, errY, errorMessage.c_str(), true, EpdFontFamily::BOLD);
     } else {
       const int listTop = contentTop;
       const int cellH = 115;
       const int spacing = 10;
+      const int lineHeight = renderer.getLineHeight(UI_10_FONT_ID);
+      const int sectionGap = 6;
 
       for (int i = 0; i < 5; i++) {
         int idx = itemsScrollOffset + i;
-        if (idx >= static_cast<int>(allItems.size()))
-          break;
+        if (idx >= static_cast<int>(allItems.size())) break;
 
-        const auto &item = allItems[idx];
+        const auto& item = allItems[idx];
         int cellY = listTop + i * (cellH + spacing);
         int cellX = metrics.contentSidePadding;
         int cellW = pageWidth - 2 * metrics.contentSidePadding;
+        int cellBottom = cellY + cellH - 4;
 
         bool isSelected = (idx == selectedItemIndex);
-        renderer.drawRoundedRect(cellX, cellY, cellW, cellH, isSelected ? 3 : 1,
-                                 8, true);
+        renderer.drawRoundedRect(cellX, cellY, cellW, cellH, isSelected ? 3 : 1, 8, true);
 
         std::string metadata = item.feedName;
         long long ts = atoll(item.timestamp.c_str());
@@ -1474,63 +1514,52 @@ void RssActivity::render(RenderLock &&) {
         if (!relativeTime.empty()) {
           metadata += " • " + relativeTime;
         }
-        renderer.drawText(SMALL_FONT_ID, cellX + 12, cellY + 12,
-                          metadata.c_str(), true, EpdFontFamily::BOLD);
+        int textY = cellY + 12;
+        renderer.drawText(UI_10_FONT_ID, cellX + 12, textY, metadata.c_str(), true, EpdFontFamily::BOLD);
+        textY += lineHeight + sectionGap;
 
         auto titleLines =
-            renderer.wrappedText(SMALL_FONT_ID, item.title.c_str(), cellW - 24,
-                                 2, EpdFontFamily::REGULAR);
-        for (size_t l = 0; l < titleLines.size() && l < 2; l++) {
-          renderer.drawText(SMALL_FONT_ID, cellX + 12, cellY + 32 + l * 18,
-                            titleLines[l].c_str(), true,
+            renderer.wrappedText(UI_10_FONT_ID, item.title.c_str(), cellW - 24, 2, EpdFontFamily::REGULAR);
+        for (size_t l = 0; l < titleLines.size() && l < 2 && textY + lineHeight <= cellBottom; l++) {
+          renderer.drawText(UI_10_FONT_ID, cellX + 12, textY, titleLines[l].c_str(), true,
                             EpdFontFamily::REGULAR);
+          textY += lineHeight;
         }
+        textY += sectionGap;
 
         if (!item.description.empty()) {
           auto descLines =
-              renderer.wrappedText(SMALL_FONT_ID, item.description.c_str(),
-                                   cellW - 24, 2, EpdFontFamily::REGULAR);
-          if (!descLines.empty()) {
-            renderer.drawText(SMALL_FONT_ID, cellX + 12, cellY + 72,
-                              descLines[0].c_str(), true,
+              renderer.wrappedText(UI_10_FONT_ID, item.description.c_str(), cellW - 24, 2, EpdFontFamily::REGULAR);
+          for (size_t l = 0; l < descLines.size() && l < 2 && textY + lineHeight <= cellBottom; l++) {
+            renderer.drawText(UI_10_FONT_ID, cellX + 12, textY, descLines[l].c_str(), true,
                               EpdFontFamily::REGULAR);
-            if (descLines.size() > 1) {
-              renderer.drawText(SMALL_FONT_ID, cellX + 12, cellY + 90,
-                                descLines[1].c_str(), true,
-                                EpdFontFamily::REGULAR);
-            }
+            textY += lineHeight;
           }
         }
       }
     }
 
-    const auto labels = mappedInput.mapLabels(tr(STR_BACK), tr(STR_SELECT),
-                                              "Details", "Refresh");
-    GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3,
-                        labels.btn4);
+    const auto labels = mappedInput.mapLabels(tr(STR_BACK), tr(STR_SELECT), "Details", "Refresh");
+    GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
   } else if (state == RssState::PostDetail) {
-    const auto &item = allItems[selectedItemIndex];
-    GUI.drawHeader(renderer,
-                   Rect{0, metrics.topPadding, pageWidth, metrics.headerHeight},
-                   "RSS Post");
+    const auto& item = allItems[selectedItemIndex];
+    GUI.drawHeader(renderer, Rect{0, metrics.topPadding, pageWidth, metrics.headerHeight}, "RSS Post");
 
     int contentY = contentTop;
+    const int articleFontId = kRssArticleFontIds[articleFontSizeIndex];
 
-    auto titleLines = renderer.wrappedText(
-        SMALL_FONT_ID, item.title.c_str(),
-        pageWidth - 2 * metrics.contentSidePadding, 3, EpdFontFamily::BOLD);
+    auto titleLines = renderer.wrappedText(articleFontId, item.title.c_str(),
+                                           pageWidth - 2 * metrics.contentSidePadding, 3, EpdFontFamily::BOLD);
     for (size_t l = 0; l < titleLines.size(); l++) {
-      renderer.drawText(SMALL_FONT_ID, metrics.contentSidePadding,
-                        contentY + l * renderer.getLineHeight(SMALL_FONT_ID),
+      renderer.drawText(articleFontId, metrics.contentSidePadding, contentY + l * renderer.getLineHeight(articleFontId),
                         titleLines[l].c_str(), true, EpdFontFamily::BOLD);
     }
-    int titleHeight = titleLines.size() * renderer.getLineHeight(SMALL_FONT_ID);
+    int titleHeight = titleLines.size() * renderer.getLineHeight(articleFontId);
     contentY += titleHeight + 10;
 
     std::string fullText = item.description;
     if (!item.content.empty()) {
-      if (!fullText.empty())
-        fullText += "\n\n";
+      if (!fullText.empty()) fullText += "\n\n";
       fullText += item.content;
     }
 
@@ -1539,8 +1568,7 @@ void RssActivity::render(RenderLock &&) {
       std::string formattedUrl = "";
       for (size_t i = 0; i < printableUrl.length(); ++i) {
         formattedUrl += printableUrl[i];
-        if (printableUrl[i] == '?' || printableUrl[i] == '&' ||
-            printableUrl[i] == '-' || printableUrl[i] == '_') {
+        if (printableUrl[i] == '?' || printableUrl[i] == '&' || printableUrl[i] == '-' || printableUrl[i] == '_') {
           formattedUrl += " ";
         } else if (printableUrl[i] == '/') {
           if (i + 1 < printableUrl.length() && printableUrl[i + 1] != '/') {
@@ -1552,75 +1580,58 @@ void RssActivity::render(RenderLock &&) {
           }
         }
       }
-      if (!fullText.empty())
-        fullText += "\n\n";
+      if (!fullText.empty()) fullText += "\n\n";
       fullText += "Link: " + formattedUrl;
     }
 
-    auto lines =
-        renderer.wrappedText(SMALL_FONT_ID, fullText.c_str(),
-                             pageWidth - 2 * metrics.contentSidePadding, 500,
-                             EpdFontFamily::REGULAR);
+    auto lines = renderer.wrappedText(articleFontId, fullText.c_str(), pageWidth - 2 * metrics.contentSidePadding, 500,
+                                      EpdFontFamily::REGULAR);
 
-    int maxLines = (contentHeight - (contentY - contentTop)) /
-                   renderer.getLineHeight(SMALL_FONT_ID);
-    if (detailScrollOffset >
-        std::max(0, static_cast<int>(lines.size()) - maxLines)) {
-      detailScrollOffset =
-          std::max(0, static_cast<int>(lines.size()) - maxLines);
+    int maxLines = (contentHeight - (contentY - contentTop)) / renderer.getLineHeight(articleFontId);
+    if (detailScrollOffset > std::max(0, static_cast<int>(lines.size()) - maxLines)) {
+      detailScrollOffset = std::max(0, static_cast<int>(lines.size()) - maxLines);
     }
 
     for (int i = 0; i < maxLines; i++) {
       int lineIdx = detailScrollOffset + i;
-      if (lineIdx >= static_cast<int>(lines.size()))
-        break;
-      renderer.drawText(SMALL_FONT_ID, metrics.contentSidePadding,
-                        contentY + i * renderer.getLineHeight(SMALL_FONT_ID),
+      if (lineIdx >= static_cast<int>(lines.size())) break;
+      renderer.drawText(articleFontId, metrics.contentSidePadding, contentY + i * renderer.getLineHeight(articleFontId),
                         lines[lineIdx].c_str(), true, EpdFontFamily::REGULAR);
     }
 
-    const auto labels =
-        mappedInput.mapLabels(tr(STR_BACK), "Visit Link", nullptr, nullptr);
-    GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3,
-                        labels.btn4);
+    const auto labels = mappedInput.mapLabels(tr(STR_BACK), "Visit Link", "-", "+");
+    GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
   } else if (state == RssState::FeedSelection) {
-    GUI.drawHeader(renderer,
-                   Rect{0, metrics.topPadding, pageWidth, metrics.headerHeight},
-                   "RSS Feed");
+    GUI.drawHeader(renderer, Rect{0, metrics.topPadding, pageWidth, metrics.headerHeight}, "RSS Feed");
 
     int totalItems = static_cast<int>(subscriptions.size()) + 1;
 
     GUI.drawButtonMenu(
         renderer,
-        Rect{
-            0,
-            metrics.topPadding + metrics.headerHeight + metrics.verticalSpacing,
-            pageWidth,
-            pageHeight - (metrics.headerHeight + metrics.topPadding +
-                          metrics.verticalSpacing + metrics.buttonHintsHeight)},
+        Rect{0, metrics.topPadding + metrics.headerHeight + metrics.verticalSpacing, pageWidth,
+             pageHeight -
+                 (metrics.headerHeight + metrics.topPadding + metrics.verticalSpacing + metrics.buttonHintsHeight)},
         totalItems, selectedSubIndex,
         [this, totalItems](int index) {
-          if (index == totalItems - 1)
-            return std::string("[+ Add RSS URL]");
+          if (index == totalItems - 1) return std::string("[+ Add RSS URL]");
           std::string url = subscriptions[index];
           return getFriendlyFeedName(url);
         },
         [this, totalItems](int index) {
-          if (index == totalItems - 1)
-            return UIIcon::File;
+          if (index == totalItems - 1) return UIIcon::File;
           return UIIcon::Library;
         },
         9);
 
-    const char *rightAction = nullptr;
+    const char* leftAction = nullptr;
+    const char* rightAction = nullptr;
     if (selectedSubIndex >= 0 && selectedSubIndex < totalItems - 1) {
+      leftAction = "Edit";
       rightAction = "Delete";
     }
 
-    const auto labels = mappedInput.mapLabels(tr(STR_BACK), tr(STR_SELECT),
-                                              nullptr, rightAction);
-    GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3,
-                        labels.btn4);
+    const auto labels = mappedInput.mapLabels(tr(STR_BACK), tr(STR_SELECT), leftAction, rightAction);
+    GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
   }
 
   renderer.displayBuffer();

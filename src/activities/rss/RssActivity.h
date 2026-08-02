@@ -32,6 +32,7 @@ class RssActivity final : public Activity {
    int selectedSubIndex = 0;
    int itemsScrollOffset = 0;
    int detailScrollOffset = 0;
+   uint8_t articleFontSizeIndex = 1; // index into kRssArticleFontIds, persisted across sessions
 
    bool offlineMode = false;
    std::string errorMessage;
@@ -46,9 +47,15 @@ class RssActivity final : public Activity {
    void saveSubscriptions();
    bool loadOfflineFeeds();
    void ensureDirectoriesExist();
+   void loadArticleFontSize();
+   void saveArticleFontSize();
 
    bool parseFeedsFromMarkdown(const std::string &filepath, std::vector<RssItem> &targetList, bool summaryOnly = false);
    void downloadActivePost();
+   // Overwrites /apps/rss/rss_debug.log with the given contents, so the last fetch
+   // attempt's HTTP result/error detail can be inspected from the SD card without
+   // a serial connection.
+   void writeDebugLog(const std::string &contents);
 
  public:
   void runBackgroundFetch();

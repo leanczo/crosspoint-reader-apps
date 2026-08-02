@@ -132,6 +132,11 @@ HttpDownloader::DownloadError runGet(const std::string& url, const std::string& 
         hop++;
         continue;
       }
+      // Redirect status with no usable Location header: without this, the
+      // caller only ever sees "HTTP Status: 3xx" with no clue why we didn't
+      // follow it.
+      LOG_ERR("HTTP", "redirect status %d from %s but no Location header", status, currentUrl.c_str());
+      if (outErrorDetail) *outErrorDetail = "HTTP Status: " + std::to_string(status) + " (redirect with no Location header)";
     }
 
     break;
@@ -157,7 +162,8 @@ HttpDownloader::DownloadError runGet(const std::string& url, const std::string& 
 
   if (status != 200) {
     LOG_ERR("HTTP", "unexpected status: %d", status);
-    if (outErrorDetail) *outErrorDetail = "HTTP Status: " + std::to_string(status);
+    // Don't clobber the more specific "redirect with no Location header" detail set above.
+    if (outErrorDetail && outErrorDetail->empty()) *outErrorDetail = "HTTP Status: " + std::to_string(status);
     esp_http_client_cleanup(client);
     return HttpDownloader::HTTP_ERROR;
   }

@@ -35,6 +35,17 @@ import re
 from pathlib import Path
 from typing import Dict, List, Optional, Set, Tuple
 
+# Language names in the summary table (e.g. "Español", "Português") are
+# non-ASCII. When this script runs as a PlatformIO pre-build subprocess on
+# Windows, stdout is attached to the console's legacy codepage (e.g. cp1252)
+# instead of UTF-8, so printing them raises UnicodeEncodeError in PlatformIO's
+# own output-relay thread — which then hangs the whole `pio run` waiting on
+# that dead thread instead of failing loudly. Force UTF-8 with a safe
+# fallback so this script's output can never crash the parent build process.
+for _stream in (sys.stdout, sys.stderr):
+    if hasattr(_stream, "reconfigure"):
+        _stream.reconfigure(encoding="utf-8", errors="replace")
+
 
 # ---------------------------------------------------------------------------
 # YAML file reading (simple key: "value" format, no PyYAML dependency)

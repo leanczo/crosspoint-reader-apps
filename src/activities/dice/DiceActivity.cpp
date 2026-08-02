@@ -81,6 +81,9 @@ void DiceActivity::roll() {
     case DiceMode::Magic8:
       lastRollMagic8 = rand() % 20; // 20 standard responses
       break;
+    case DiceMode::Coin:
+      lastRollCoin = rand() % 2; // 0 = Heads, 1 = Tails
+      break;
   }
 }
 
@@ -91,15 +94,15 @@ void DiceActivity::loop() {
   }
 
   if (mappedInput.wasReleased(MappedInputManager::Button::Left)) {
-    currentMode = static_cast<DiceMode>((static_cast<int>(currentMode) - 1 + 4) % 4);
+    currentMode = static_cast<DiceMode>((static_cast<int>(currentMode) - 1 + 5) % 5);
     requestUpdate();
   } else if (mappedInput.wasReleased(MappedInputManager::Button::Right)) {
-    currentMode = static_cast<DiceMode>((static_cast<int>(currentMode) + 1) % 4);
+    currentMode = static_cast<DiceMode>((static_cast<int>(currentMode) + 1) % 5);
     requestUpdate();
   } else if (mappedInput.wasReleased(MappedInputManager::Button::Confirm)) {
     {
       RenderLock lock;
-      GUI.drawPopup(renderer, "Rolling...");
+      GUI.drawPopup(renderer, tr(STR_DICE_ROLLING));
       renderer.displayBuffer();
     }
     delay(400); // Wait 0.4s with the overlay visible
@@ -189,14 +192,14 @@ void DiceActivity::drawMagic8(int x, int y, int size, int responseIndex) {
   fillCircle(renderer, x, y, radius - 30, false);
   drawCircle(renderer, x, y, radius - 30, 2, true);
 
-  const char* responses[] = {
-    "It is\ncertain", "It is\ndecidedly\nso", "Without a\ndoubt", "Yes\ndefinitely", "You may\nrely on it",
-    "As I see it,\nyes", "Most\nlikely", "Outlook\ngood", "Yes", "Signs point\nto yes",
-    "Reply hazy,\ntry again", "Ask again\nlater", "Better not\ntell you\nnow", "Cannot\npredict\nnow", "Concentrate\nand ask\nagain",
-    "Don't\ncount on it", "My reply\nis no", "My sources\nsay no", "Outlook\nnot so good", "Very\ndoubtful"
+  static constexpr StrId responses[] = {
+    STR_DICE_MAGIC8_0,  STR_DICE_MAGIC8_1,  STR_DICE_MAGIC8_2,  STR_DICE_MAGIC8_3,  STR_DICE_MAGIC8_4,
+    STR_DICE_MAGIC8_5,  STR_DICE_MAGIC8_6,  STR_DICE_MAGIC8_7,  STR_DICE_MAGIC8_8,  STR_DICE_MAGIC8_9,
+    STR_DICE_MAGIC8_10, STR_DICE_MAGIC8_11, STR_DICE_MAGIC8_12, STR_DICE_MAGIC8_13, STR_DICE_MAGIC8_14,
+    STR_DICE_MAGIC8_15, STR_DICE_MAGIC8_16, STR_DICE_MAGIC8_17, STR_DICE_MAGIC8_18, STR_DICE_MAGIC8_19,
   };
 
-  std::string txt = responses[responseIndex];
+  std::string txt = tr(responses[responseIndex]);
   
   // Basic line breaking rendering
   int yOffset = y - 20; // Start roughly near the top of the inner circle
@@ -215,6 +218,19 @@ void DiceActivity::drawMagic8(int x, int y, int size, int responseIndex) {
   renderer.drawText(SMALL_FONT_ID, x - tW / 2, yOffset, line.c_str(), true);
 }
 
+void DiceActivity::drawCoin(int x, int y, int size, int value) {
+  int radius = size / 2;
+
+  drawCircle(renderer, x, y, radius, 2, true);
+  fillCircle(renderer, x, y, radius - 6, false);
+  drawCircle(renderer, x, y, radius - 6, 1, true);
+
+  const char* label = value == 0 ? tr(STR_DICE_COIN_HEADS) : tr(STR_DICE_COIN_TAILS);
+  int tW = renderer.getTextWidth(NOTOSANS_18_FONT_ID, label, EpdFontFamily::BOLD);
+  int tH = renderer.getLineHeight(NOTOSANS_18_FONT_ID);
+  renderer.drawText(NOTOSANS_18_FONT_ID, x - tW / 2, y - tH / 2, label, true, EpdFontFamily::BOLD);
+}
+
 void DiceActivity::render(RenderLock&&) {
   renderer.clearScreen();
 
@@ -222,14 +238,15 @@ void DiceActivity::render(RenderLock&&) {
   const auto pageHeight = renderer.getScreenHeight();
   const auto& metrics = UITheme::getInstance().getMetrics();
 
-  GUI.drawHeader(renderer, Rect{0, metrics.topPadding, pageWidth, metrics.headerHeight}, "Dice & Tools");
+  GUI.drawHeader(renderer, Rect{0, metrics.topPadding, pageWidth, metrics.headerHeight}, tr(STR_DICE_TITLE));
 
   // Draw tabs bar
   const int tabsY = metrics.topPadding + metrics.headerHeight + 20;
-  const int tabW = (pageWidth - 40) / 4;
-  const std::string tabNames[4] = { "D6", "Arrow", "D20", "8-Ball" };
+  const int tabW = (pageWidth - 40) / 5;
+  const std::string tabNames[5] = {tr(STR_DICE_TAB_D6), tr(STR_DICE_TAB_ARROW), tr(STR_DICE_TAB_D20),
+                                    tr(STR_DICE_TAB_MAGIC8), tr(STR_DICE_TAB_COIN)};
 
-  for (int i = 0; i < 4; i++) {
+  for (int i = 0; i < 5; i++) {
     bool active = (currentMode == static_cast<DiceMode>(i));
     int tx = 20 + i * tabW;
     renderer.drawRoundedRect(tx + 2, tabsY, tabW - 4, 30, 1, 5, true);
@@ -254,19 +271,23 @@ void DiceActivity::render(RenderLock&&) {
   switch (currentMode) {
     case DiceMode::D6:
       drawD6(cx, cy, 120, lastRollD6);
-      renderer.drawCenteredText(UI_12_FONT_ID, cardY + cardH - 45, "Press Confirm to Roll", true, EpdFontFamily::REGULAR);
+      renderer.drawCenteredText(UI_12_FONT_ID, cardY + cardH - 45, tr(STR_DICE_PRESS_ROLL), true, EpdFontFamily::REGULAR);
       break;
     case DiceMode::Arrow:
       drawArrow(cx, cy, 150, lastRollArrowAngle);
-      renderer.drawCenteredText(UI_12_FONT_ID, cardY + cardH - 45, "Press Confirm to Spin Arrow", true, EpdFontFamily::REGULAR);
+      renderer.drawCenteredText(UI_12_FONT_ID, cardY + cardH - 45, tr(STR_DICE_PRESS_SPIN), true, EpdFontFamily::REGULAR);
       break;
     case DiceMode::D20:
       drawD20(cx, cy, 150, lastRollD20);
-      renderer.drawCenteredText(UI_12_FONT_ID, cardY + cardH - 45, "Press Confirm to Roll D20", true, EpdFontFamily::REGULAR);
+      renderer.drawCenteredText(UI_12_FONT_ID, cardY + cardH - 45, tr(STR_DICE_PRESS_ROLL_D20), true, EpdFontFamily::REGULAR);
       break;
     case DiceMode::Magic8:
       drawMagic8(cx, cy, 150, lastRollMagic8);
-      renderer.drawCenteredText(UI_12_FONT_ID, cardY + cardH - 45, "Press Confirm to Shake 8-Ball", true, EpdFontFamily::REGULAR);
+      renderer.drawCenteredText(UI_12_FONT_ID, cardY + cardH - 45, tr(STR_DICE_PRESS_SHAKE), true, EpdFontFamily::REGULAR);
+      break;
+    case DiceMode::Coin:
+      drawCoin(cx, cy, 150, lastRollCoin);
+      renderer.drawCenteredText(UI_12_FONT_ID, cardY + cardH - 45, tr(STR_DICE_PRESS_FLIP), true, EpdFontFamily::REGULAR);
       break;
   }
 

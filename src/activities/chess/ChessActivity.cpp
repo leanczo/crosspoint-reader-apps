@@ -1,16 +1,22 @@
 #include "ChessActivity.h"
-#include <algorithm>
+
+#include <Arduino.h>
 #include <GfxRenderer.h>
 #include <I18n.h>
-#include <cstdlib>
+#include <Logging.h>
+
+#include <algorithm>
 #include <cmath>
-#include <Arduino.h>
+#include <cstdlib>
+
 #include "MappedInputManager.h"
 #include "components/UITheme.h"
 #include "fontIds.h"
 
+namespace {
+
 // Correct Midpoint Circle helper (Bresenham's)
-static void drawCircle(const GfxRenderer& renderer, int x0, int y0, int radius, int thickness, bool state) {
+void drawCircle(const GfxRenderer& renderer, int x0, int y0, int radius, int thickness, bool state) {
   for (int t = 0; t < thickness; t++) {
     int r = radius - t;
     int x = r;
@@ -25,7 +31,7 @@ static void drawCircle(const GfxRenderer& renderer, int x0, int y0, int radius, 
       renderer.drawPixel(x0 - y, y0 - x, state);
       renderer.drawPixel(x0 + y, y0 - x, state);
       renderer.drawPixel(x0 + x, y0 - y, state);
-      
+
       if (err >= 0) {
         x -= 1;
         err += 4 * (y - x) + 10;
@@ -37,7 +43,7 @@ static void drawCircle(const GfxRenderer& renderer, int x0, int y0, int radius, 
   }
 }
 
-static void fillCircle(const GfxRenderer& renderer, int x0, int y0, int radius, bool state) {
+void fillCircle(const GfxRenderer& renderer, int x0, int y0, int radius, bool state) {
   int x = radius;
   int y = 0;
   int err = 3 - 2 * radius;
@@ -56,146 +62,119 @@ static void fillCircle(const GfxRenderer& renderer, int x0, int y0, int radius, 
   }
 }
 
+bool sameSide(int piece, bool white) { return white ? piece > 0 : piece < 0; }
+
+void chessBotTaskFunc(void* param) {
+  auto* activity = static_cast<ChessActivity*>(param);
+  activity->runBotSearch();
+  vTaskDelete(nullptr);
+}
+
+}  // namespace
+
 void ChessActivity::onEnter() {
   Activity::onEnter();
   bool isBoardEmpty = true;
   for (int r = 0; r < 8; r++) {
     for (int c = 0; c < 8; c++) {
-      if (board[r][c] != 0) {
+      if (state.board[r][c] != 0) {
         isBoardEmpty = false;
         break;
       }
     }
   }
   if (isBoardEmpty) {
-    setupInitialBoard();
-    cursorRow = 7;
-    cursorCol = 4;
-    selectedRow = -1;
-    selectedCol = -1;
-    whiteTurn = true;
-    flippedView = false;
+    resetGame();
   }
   requestUpdate();
 }
 
 void ChessActivity::onExit() {
+  // Unlike FootballActivity's network fetch task, the bot search task holds no
+  // sockets/buffers that need graceful cleanup — it only touches local stack
+  // memory — so killing it here on exit is safe.
+  cancelBotTask();
   Activity::onExit();
 }
 
-void ChessActivity::setupInitialBoard() {
-  // Empty board
-  for (int r = 0; r < 8; r++) {
-    for (int c = 0; c < 8; c++) {
-      board[r][c] = 0;
-    }
-  }
-
-  // Pawns
-  for (int c = 0; c < 8; c++) {
-    board[1][c] = -1; // Black Pawn
-    board[6][c] = 1;  // White Pawn
-  }
-
-  // Rooks
-  board[0][0] = board[0][7] = -4; // Black
-  board[7][0] = board[7][7] = 4;  // White
-
-  // Knights
-  board[0][1] = board[0][6] = -2; // Black
-  board[7][1] = board[7][6] = 2;  // White
-
-  // Bishops
-  board[0][2] = board[0][5] = -3; // Black
-  board[7][2] = board[7][5] = 3;  // White
-
-  // Queens
-  board[0][3] = -5; // Black Queen
-  board[7][3] = 5;  // White Queen
-
-  // Kings
-  board[0][4] = -6; // Black King
-  board[7][4] = 6;  // White King
+void ChessActivity::resetGame() {
+  ChessEngine::setupInitialBoard(state);
+  cursorRow = 7;
+  cursorCol = 4;
+  selectedRow = -1;
+  selectedCol = -1;
+  whiteTurn = true;
+  flippedView = false;
+  cancelBotTask();
+  botMoveReady = false;
+  refreshGameStatus();
 }
 
-bool ChessActivity::isPathClear(int fromRow, int fromCol, int toRow, int toCol) const {
-  int dr = toRow - fromRow;
-  int dc = toCol - fromCol;
-  int stepR = (dr == 0) ? 0 : (dr > 0 ? 1 : -1);
-  int stepC = (dc == 0) ? 0 : (dc > 0 ? 1 : -1);
+void ChessActivity::refreshGameStatus() { gameStatus = ChessEngine::getGameStatus(state, whiteTurn); }
 
-  int r = fromRow + stepR;
-  int c = fromCol + stepC;
-  while (r != toRow || c != toCol) {
-    if (board[r][c] != 0) {
-      return false;
-    }
-    r += stepR;
-    c += stepC;
-  }
-  return true;
+bool ChessActivity::isBotTurn() const {
+  return mode != ChessMode::LocalTwoPlayer && !whiteTurn && gameStatus != ChessEngine::GameStatus::Checkmate &&
+         gameStatus != ChessEngine::GameStatus::Stalemate;
 }
 
-bool ChessActivity::isValidMove(int fromRow, int fromCol, int toRow, int toCol) const {
-  // Bounds check
-  if (fromRow < 0 || fromRow >= 8 || fromCol < 0 || fromCol >= 8) return false;
-  if (toRow < 0 || toRow >= 8 || toCol < 0 || toCol >= 8) return false;
-
-  // Destination cannot contain player's own piece
-  int piece = board[fromRow][fromCol];
-  int target = board[toRow][toCol];
-  if (piece == 0) return false;
-  if (target != 0 && (piece * target > 0)) return false;
-
-  int dr = toRow - fromRow;
-  int dc = toCol - fromCol;
-  int absPiece = abs(piece);
-
-  switch (absPiece) {
-    case 1: { // Pawn
-      int dir = (piece > 0) ? -1 : 1;
-      // Single step forward
-      if (dr == dir && dc == 0 && target == 0) {
-        return true;
-      }
-      // Double step forward
-      int startRow = (piece > 0) ? 6 : 1;
-      if (fromRow == startRow && dr == 2 * dir && dc == 0 && target == 0 && board[fromRow + dir][fromCol] == 0) {
-        return true;
-      }
-      // Diagonal Capture
-      if (dr == dir && abs(dc) == 1 && target != 0 && (piece * target < 0)) {
-        return true;
-      }
-      return false;
-    }
-    case 2: // Knight
-      return (abs(dr) * abs(dc) == 2);
-
-    case 3: // Bishop
-      if (abs(dr) == abs(dc)) {
-        return isPathClear(fromRow, fromCol, toRow, toCol);
-      }
-      return false;
-
-    case 4: // Rook
-      if (dr == 0 || dc == 0) {
-        return isPathClear(fromRow, fromCol, toRow, toCol);
-      }
-      return false;
-
-    case 5: // Queen
-      if (abs(dr) == abs(dc) || dr == 0 || dc == 0) {
-        return isPathClear(fromRow, fromCol, toRow, toCol);
-      }
-      return false;
-
-    case 6: // King
-      return (std::max(abs(dr), abs(dc)) == 1);
-
+int ChessActivity::botSearchDepth() const {
+  switch (mode) {
+    case ChessMode::VsBotEasy:
+      return 1;
+    case ChessMode::VsBotMedium:
+      return 2;
+    case ChessMode::VsBotHard:
+      return 3;
     default:
-      return false;
+      return 1;
   }
+}
+
+const char* ChessActivity::modeLabel() const {
+  switch (mode) {
+    case ChessMode::LocalTwoPlayer:
+      return tr(STR_CHESS_MODE_LOCAL);
+    case ChessMode::VsBotEasy:
+      return tr(STR_CHESS_MODE_BOT_EASY);
+    case ChessMode::VsBotMedium:
+      return tr(STR_CHESS_MODE_BOT_MEDIUM);
+    case ChessMode::VsBotHard:
+      return tr(STR_CHESS_MODE_BOT_HARD);
+    default:
+      return "";
+  }
+}
+
+void ChessActivity::startBotSearch() {
+  if (botTaskHandle != nullptr) return;
+  botThinking = true;
+  botMoveReady = false;
+  // Stack accounts for ~4 nested minimax frames at depth 3 (findBestMove +
+  // 3 recursive levels), each holding a ChessMove[MAX_MOVES] (~1.7KB) plus a
+  // ChessState copy (~270B), roughly 8KB, doubled here for safety margin —
+  // verify actual usage on-device with uxTaskGetStackHighWaterMark().
+  xTaskCreate(chessBotTaskFunc, "chess_bot", 16384, this, 5, reinterpret_cast<TaskHandle_t*>(&botTaskHandle));
+}
+
+void ChessActivity::cancelBotTask() {
+  if (botTaskHandle != nullptr) {
+    TaskHandle_t tempHandle = static_cast<TaskHandle_t>(botTaskHandle);
+    botTaskHandle = nullptr;
+    vTaskDelete(tempHandle);
+  }
+  botThinking = false;
+}
+
+void ChessActivity::runBotSearch() {
+  unsigned long startMs = millis();
+  ChessEngine::ChessMove move;
+  bool found = ChessEngine::findBestMove(state, /*white=*/false, botSearchDepth(), move);
+  LOG_INF("CHESS", "Bot search done in %lums (depth=%d, found=%d)", millis() - startMs, botSearchDepth(),
+          found ? 1 : 0);
+  if (found) {
+    pendingBotMove = move;
+  }
+  botMoveReady = true;
 }
 
 void ChessActivity::loop() {
@@ -210,13 +189,32 @@ void ChessActivity::loop() {
     return;
   }
 
+  if (isBotTurn()) {
+    if (botTaskHandle == nullptr && !botMoveReady) {
+      startBotSearch();
+    }
+    if (botMoveReady) {
+      ChessEngine::applyMove(state, pendingBotMove);
+      botTaskHandle = nullptr;  // task already self-deleted via vTaskDelete(nullptr)
+      botMoveReady = false;
+      botThinking = false;
+      whiteTurn = true;
+      refreshGameStatus();
+      requestUpdate();
+    }
+    return;  // board/toolbar input ignored while the bot is thinking
+  }
+
+  const bool gameOver =
+      gameStatus == ChessEngine::GameStatus::Checkmate || gameStatus == ChessEngine::GameStatus::Stalemate;
+
   if (cursorRow == -1) {
     // Toolbar navigation
     if (mappedInput.wasReleased(MappedInputManager::Button::Left)) {
-      cursorCol = (cursorCol - 1 + 2) % 2;
+      cursorCol = (cursorCol - 1 + 3) % 3;
       requestUpdate();
     } else if (mappedInput.wasReleased(MappedInputManager::Button::Right)) {
-      cursorCol = (cursorCol + 1) % 2;
+      cursorCol = (cursorCol + 1) % 3;
       requestUpdate();
     } else if (mappedInput.wasReleased(MappedInputManager::Button::Down)) {
       cursorRow = flippedView ? 0 : 7;
@@ -224,22 +222,15 @@ void ChessActivity::loop() {
       requestUpdate();
     } else if (mappedInput.wasReleased(MappedInputManager::Button::Confirm)) {
       if (cursorCol == 0) {
-        // Reset everything for a new game
-        for (int r = 0; r < 8; r++) {
-          for (int c = 0; c < 8; c++) {
-            board[r][c] = 0;
-          }
-        }
-        setupInitialBoard();
-        cursorRow = 7;
-        cursorCol = 4;
-        selectedRow = -1;
-        selectedCol = -1;
-        whiteTurn = true;
-        flippedView = false;
+        resetGame();
+        requestUpdate();
+      } else if (cursorCol == 1) {
+        flippedView = !flippedView;
         requestUpdate();
       } else {
-        flippedView = !flippedView;
+        constexpr int kModeCount = 4;
+        mode = static_cast<ChessMode>((static_cast<int>(mode) + 1) % kModeCount);
+        resetGame();
         requestUpdate();
       }
     }
@@ -293,12 +284,12 @@ void ChessActivity::loop() {
         cursorCol = (cursorCol + 1) % 8;
       }
       requestUpdate();
-    } else if (mappedInput.wasReleased(MappedInputManager::Button::Confirm)) {
-      int clickedPiece = board[cursorRow][cursorCol];
-      
+    } else if (!gameOver && mappedInput.wasReleased(MappedInputManager::Button::Confirm)) {
+      int clickedPiece = state.board[cursorRow][cursorCol];
+
       if (selectedRow == -1) {
         // First selection click
-        if (clickedPiece != 0 && ((whiteTurn && clickedPiece > 0) || (!whiteTurn && clickedPiece < 0))) {
+        if (clickedPiece != 0 && sameSide(clickedPiece, whiteTurn)) {
           selectedRow = cursorRow;
           selectedCol = cursorCol;
           requestUpdate();
@@ -310,27 +301,27 @@ void ChessActivity::loop() {
           selectedRow = -1;
           selectedCol = -1;
           requestUpdate();
-        } else if (clickedPiece != 0 && ((whiteTurn && clickedPiece > 0) || (!whiteTurn && clickedPiece < 0))) {
+        } else if (clickedPiece != 0 && sameSide(clickedPiece, whiteTurn)) {
           // Select alternative own piece
           selectedRow = cursorRow;
           selectedCol = cursorCol;
           requestUpdate();
-        } else if (isValidMove(selectedRow, selectedCol, cursorRow, cursorCol)) {
-          // Perform move
-          int movingPiece = board[selectedRow][selectedCol];
-          
-          // Check Pawn Promotion
-          if (abs(movingPiece) == 1 && (cursorRow == 0 || cursorRow == 7)) {
-            movingPiece = (movingPiece > 0) ? 5 : -5; // Auto-promote to Queen
+        } else {
+          ChessEngine::ChessMove legalMoves[ChessEngine::MAX_MOVES];
+          int legalCount = ChessEngine::generateLegalMoves(state, whiteTurn, legalMoves);
+          for (int i = 0; i < legalCount; i++) {
+            const auto& m = legalMoves[i];
+            if (m.fromRow == selectedRow && m.fromCol == selectedCol && m.toRow == cursorRow &&
+                m.toCol == cursorCol) {
+              ChessEngine::applyMove(state, m);
+              selectedRow = -1;
+              selectedCol = -1;
+              whiteTurn = !whiteTurn;
+              refreshGameStatus();
+              requestUpdate();
+              break;
+            }
           }
-          
-          board[cursorRow][cursorCol] = movingPiece;
-          board[selectedRow][selectedCol] = 0;
-
-          selectedRow = -1;
-          selectedCol = -1;
-          whiteTurn = !whiteTurn;
-          requestUpdate();
         }
       }
     }
@@ -346,32 +337,44 @@ void ChessActivity::render(RenderLock&&) {
 
   GUI.drawHeader(renderer, Rect{0, metrics.topPadding, pageWidth, metrics.headerHeight}, "Chess");
 
-  // Draw Toolbar
+  // Draw Toolbar: New Game / Flip Board / Mode, evenly spread across the screen
+  // width so this still fits in portrait orientations (unlike the original
+  // fixed 20/160px columns, which assumed a wide landscape screen).
   const int toolbarY = metrics.topPadding + metrics.headerHeight + 20;
+  const int toolbarMargin = 20;
+  const int toolbarGap = 16;
+  const int toolbarBtnW = (pageWidth - 2 * toolbarMargin - 2 * toolbarGap) / 3;
+  const int toolbarBtnX[3] = {toolbarMargin, toolbarMargin + toolbarBtnW + toolbarGap,
+                               toolbarMargin + 2 * (toolbarBtnW + toolbarGap)};
+  const char* toolbarLabels[3] = {tr(STR_CHESS_NEW_GAME), tr(STR_CHESS_FLIP_BOARD), modeLabel()};
 
-  bool newGameSel = (cursorRow == -1 && cursorCol == 0);
-  renderer.drawRoundedRect(20, toolbarY, 120, 30, 1, 5, true);
-  if (newGameSel) {
-    renderer.fillRoundedRect(20, toolbarY, 120, 30, 5, Color::Black);
+  for (int i = 0; i < 3; i++) {
+    bool sel = (cursorRow == -1 && cursorCol == i);
+    renderer.drawRoundedRect(toolbarBtnX[i], toolbarY, toolbarBtnW, 30, 1, 5, true);
+    if (sel) {
+      renderer.fillRoundedRect(toolbarBtnX[i], toolbarY, toolbarBtnW, 30, 5, Color::Black);
+    }
+    int tW = renderer.getTextWidth(SMALL_FONT_ID, toolbarLabels[i]);
+    int tx = toolbarBtnX[i] + std::max(4, (toolbarBtnW - tW) / 2);
+    renderer.drawText(SMALL_FONT_ID, tx, toolbarY + 7, toolbarLabels[i], !sel);
   }
-  renderer.drawText(SMALL_FONT_ID, 30, toolbarY + 7, "New Game", !newGameSel);
-
-  bool flipSel = (cursorRow == -1 && cursorCol == 1);
-  renderer.drawRoundedRect(160, toolbarY, 120, 30, 1, 5, true);
-  if (flipSel) {
-    renderer.fillRoundedRect(160, toolbarY, 120, 30, 5, Color::Black);
-  }
-  renderer.drawText(SMALL_FONT_ID, 170, toolbarY + 7, "Flip Board", !flipSel);
-
 
   // Chess Board dimensions
-  const int cellS = 48; // 48x48 squares to fit 48pt emoji font
+  const int cellS = 48;  // 48x48 squares to fit 48pt emoji font
   const int boardW = 8 * cellS;
   const int gridX = (pageWidth - boardW) / 2;
   const int gridY = toolbarY + 50;
 
   // Grid background outline
   renderer.drawRect(gridX - 2, gridY - 2, boardW + 4, boardW + 4, 2, true);
+
+  // Legal destinations for the currently selected piece, computed once here
+  // rather than per-square inside the loop below.
+  ChessEngine::ChessMove selMoves[ChessEngine::MAX_MOVES];
+  int selMoveCount = 0;
+  if (selectedRow != -1) {
+    selMoveCount = ChessEngine::generateLegalMoves(state, whiteTurn, selMoves);
+  }
 
   // Draw Board Squares
   for (int r = 0; r < 8; r++) {
@@ -394,22 +397,46 @@ void ChessActivity::render(RenderLock&&) {
       }
 
       // Draw piece if present
-      int piece = board[r][c];
+      int piece = state.board[r][c];
       if (piece != 0) {
         const char* pieceStr = "";
         switch (piece) {
-          case 1:  pieceStr = "\u2659"; break; // White Pawn
-          case 2:  pieceStr = "\u2658"; break; // White Knight
-          case 3:  pieceStr = "\u2657"; break; // White Bishop
-          case 4:  pieceStr = "\u2656"; break; // White Rook
-          case 5:  pieceStr = "\u2655"; break; // White Queen
-          case 6:  pieceStr = "\u2654"; break; // White King
-          case -1: pieceStr = "\u265F"; break; // Black Pawn
-          case -2: pieceStr = "\u265E"; break; // Black Knight
-          case -3: pieceStr = "\u265D"; break; // Black Bishop
-          case -4: pieceStr = "\u265C"; break; // Black Rook
-          case -5: pieceStr = "\u265B"; break; // Black Queen
-          case -6: pieceStr = "\u265A"; break; // Black King
+          case 1:
+            pieceStr = "♙";
+            break;  // White Pawn
+          case 2:
+            pieceStr = "♘";
+            break;  // White Knight
+          case 3:
+            pieceStr = "♗";
+            break;  // White Bishop
+          case 4:
+            pieceStr = "♖";
+            break;  // White Rook
+          case 5:
+            pieceStr = "♕";
+            break;  // White Queen
+          case 6:
+            pieceStr = "♔";
+            break;  // White King
+          case -1:
+            pieceStr = "♟";
+            break;  // Black Pawn
+          case -2:
+            pieceStr = "♞";
+            break;  // Black Knight
+          case -3:
+            pieceStr = "♝";
+            break;  // Black Bishop
+          case -4:
+            pieceStr = "♜";
+            break;  // Black Rook
+          case -5:
+            pieceStr = "♛";
+            break;  // Black Queen
+          case -6:
+            pieceStr = "♚";
+            break;  // Black King
         }
 
         int tW = renderer.getTextWidth(NOTOSANS_16_EMOJI_FONT_ID, pieceStr);
@@ -425,7 +452,15 @@ void ChessActivity::render(RenderLock&&) {
       }
 
       // Draw dot if valid move destination for selected piece
-      if (selectedRow != -1 && isValidMove(selectedRow, selectedCol, r, c)) {
+      bool isLegalDestination = false;
+      for (int i = 0; i < selMoveCount; i++) {
+        if (selMoves[i].fromRow == selectedRow && selMoves[i].fromCol == selectedCol && selMoves[i].toRow == r &&
+            selMoves[i].toCol == c) {
+          isLegalDestination = true;
+          break;
+        }
+      }
+      if (isLegalDestination) {
         fillCircle(renderer, cx + cellS / 2, cy + cellS / 2, 4, true);
       }
 
@@ -438,9 +473,22 @@ void ChessActivity::render(RenderLock&&) {
 
   // Footer status indicator
   const int footerY = gridY + boardW + 20;
-  std::string status = whiteTurn ? "White's Turn" : "Black's Turn";
-  if (selectedRow != -1) {
-    status += " - Select destination";
+  std::string status;
+  if (botThinking) {
+    status = tr(STR_CHESS_BOT_THINKING);
+  } else if (gameStatus == ChessEngine::GameStatus::Checkmate) {
+    status = whiteTurn ? tr(STR_CHESS_BLACK_WINS) : tr(STR_CHESS_WHITE_WINS);
+  } else if (gameStatus == ChessEngine::GameStatus::Stalemate) {
+    status = tr(STR_CHESS_STALEMATE);
+  } else {
+    status = whiteTurn ? tr(STR_CHESS_WHITE_TURN) : tr(STR_CHESS_BLACK_TURN);
+    if (gameStatus == ChessEngine::GameStatus::Check) {
+      status += " - ";
+      status += tr(STR_CHESS_CHECK);
+    } else if (selectedRow != -1) {
+      status += " - ";
+      status += tr(STR_CHESS_SELECT_DESTINATION);
+    }
   }
   renderer.drawCenteredText(UI_12_FONT_ID, footerY, status.c_str(), true, EpdFontFamily::BOLD);
 

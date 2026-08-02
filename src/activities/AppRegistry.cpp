@@ -1,11 +1,15 @@
 #include "AppRegistry.h"
 #include "activities/calculator/CalculatorActivity.h"
+#include "activities/calendar/CalendarActivity.h"
 #include "activities/chess/ChessActivity.h"
 #include "activities/dice/DiceActivity.h"
 #include "activities/duckduckgo/DuckDuckGoActivity.h"
+#include "activities/football/FootballActivity.h"
 #include "activities/formulaone/FormulaOneActivity.h"
 #include "activities/home/AppFolderActivity.h"
+#include "activities/map/MapActivity.h"
 #include "activities/rss/RssActivity.h"
+#include "activities/snake/SnakeActivity.h"
 #include "activities/sudoku/SudokuActivity.h"
 #include "activities/tictactoe/TicTacToeActivity.h"
 #include "activities/weather/WeatherActivity.h"
@@ -116,6 +120,13 @@ AppRegistry::AppRegistry() {
         return std::make_unique<TicTacToeActivity>(r, i);
       }));
 
+  // Snake App
+  gamesApps.push_back(std::make_unique<App>(
+      []() { return tr(STR_SNAKE_TITLE); }, UIIcon::Snake,
+      [](GfxRenderer &r, MappedInputManager &i) {
+        return std::make_unique<SnakeActivity>(r, i);
+      }));
+
   // --- Entertainment ---
 
   // Wikipedia App
@@ -136,6 +147,13 @@ AppRegistry::AppRegistry() {
       []() { return tr(STR_F1_TITLE); }, UIIcon::FormulaOne,
       [](GfxRenderer &r, MappedInputManager &i) {
         return std::make_unique<FormulaOneActivity>(r, i);
+      }));
+
+  // Football App
+  entertainmentApps.push_back(std::make_unique<App>(
+      []() { return tr(STR_FOOTBALL_TITLE); }, UIIcon::Football,
+      [](GfxRenderer &r, MappedInputManager &i) {
+        return std::make_unique<FootballActivity>(r, i);
       }));
 
   // --- Tools ---
@@ -160,6 +178,20 @@ AppRegistry::AppRegistry() {
                             [](GfxRenderer &r, MappedInputManager &i) {
                               return std::make_unique<DuckDuckGoActivity>(r, i);
                             }));
+
+  // Calendar App
+  toolsApps.push_back(std::make_unique<App>(
+      []() { return tr(STR_CALENDAR_TITLE); }, UIIcon::Calendar,
+      [](GfxRenderer &r, MappedInputManager &i) {
+        return std::make_unique<CalendarActivity>(r, i);
+      }));
+
+  // Map App
+  toolsApps.push_back(std::make_unique<App>(
+      []() { return tr(STR_MAP_TITLE); }, UIIcon::Map,
+      [](GfxRenderer &r, MappedInputManager &i) {
+        return std::make_unique<MapActivity>(r, i);
+      }));
 }
 
 const std::vector<std::unique_ptr<App>> &AppRegistry::getCategoryApps(AppCategory category) const {

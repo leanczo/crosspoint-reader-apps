@@ -7,7 +7,8 @@ enum class DiceMode {
   D6,
   Arrow,
   D20,
-  Magic8
+  Magic8,
+  Coin
 };
 
 class DiceActivity final : public Activity {
@@ -18,12 +19,14 @@ class DiceActivity final : public Activity {
   int lastRollArrowAngle = 0; // 0 to 359
   int lastRollD20 = 20;
   int lastRollMagic8 = 0;
+  int lastRollCoin = 0; // 0 = Heads, 1 = Tails
 
   void roll();
   void drawD6(int x, int y, int size, int value);
   void drawArrow(int x, int y, int size, int angle);
   void drawD20(int x, int y, int size, int value);
   void drawMagic8(int x, int y, int size, int responseIndex);
+  void drawCoin(int x, int y, int size, int value);
 
  public:
   explicit DiceActivity(GfxRenderer& renderer, MappedInputManager& mappedInput)

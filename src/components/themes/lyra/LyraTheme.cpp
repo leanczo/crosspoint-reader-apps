@@ -48,6 +48,14 @@
 #include "components/icons/tictactoe24.h"
 #include "components/icons/formulaone.h"
 #include "components/icons/formulaone24.h"
+#include "components/icons/snake.h"
+#include "components/icons/snake24.h"
+#include "components/icons/football.h"
+#include "components/icons/football24.h"
+#include "components/icons/calendar.h"
+#include "components/icons/calendar24.h"
+#include "components/icons/map.h"
+#include "components/icons/map24.h"
 #include "fontIds.h"
 
 
@@ -97,6 +105,14 @@ const uint8_t* iconForName(UIIcon icon, int size) {
         return Tictactoe24Icon;
       case UIIcon::FormulaOne:
         return Formulaone24Icon;
+      case UIIcon::Snake:
+        return Snake24Icon;
+      case UIIcon::Football:
+        return Football24Icon;
+      case UIIcon::Calendar:
+        return Calendar24Icon;
+      case UIIcon::Map:
+        return Map24Icon;
       default:
         return nullptr;
     }
@@ -140,6 +156,14 @@ const uint8_t* iconForName(UIIcon icon, int size) {
         return TictactoeIcon;
       case UIIcon::FormulaOne:
         return FormulaoneIcon;
+      case UIIcon::Snake:
+        return SnakeIcon;
+      case UIIcon::Football:
+        return FootballIcon;
+      case UIIcon::Calendar:
+        return CalendarIcon;
+      case UIIcon::Map:
+        return MapIcon;
       default:
         return nullptr;
     }
