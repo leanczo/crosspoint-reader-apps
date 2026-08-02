@@ -6,6 +6,8 @@
 #include "activities/duckduckgo/DuckDuckGoActivity.h"
 #include "activities/football/FootballActivity.h"
 #include "activities/formulaone/FormulaOneActivity.h"
+#include "activities/game2048/Game2048Activity.h"
+#include "activities/hackernews/HackerNewsActivity.h"
 #include "activities/home/AppFolderActivity.h"
 #include "activities/map/MapActivity.h"
 #include "activities/rss/RssActivity.h"
@@ -127,6 +129,13 @@ AppRegistry::AppRegistry() {
         return std::make_unique<SnakeActivity>(r, i);
       }));
 
+  // 2048 App
+  gamesApps.push_back(std::make_unique<App>(
+      []() { return tr(STR_2048_TITLE); }, UIIcon::Game2048,
+      [](GfxRenderer &r, MappedInputManager &i) {
+        return std::make_unique<Game2048Activity>(r, i);
+      }));
+
   // --- Entertainment ---
 
   // Wikipedia App
@@ -140,6 +149,12 @@ AppRegistry::AppRegistry() {
   entertainmentApps.push_back(std::make_unique<App>(
       []() { return tr(STR_RSS_TITLE); }, UIIcon::Rss, [](GfxRenderer &r, MappedInputManager &i) {
         return std::make_unique<RssActivity>(r, i);
+      }));
+
+  // Hacker News App
+  entertainmentApps.push_back(std::make_unique<App>(
+      []() { return tr(STR_HN_TITLE); }, UIIcon::HackerNews, [](GfxRenderer &r, MappedInputManager &i) {
+        return std::make_unique<HackerNewsActivity>(r, i);
       }));
 
   // Formula 1 App

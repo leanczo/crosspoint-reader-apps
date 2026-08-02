@@ -4,6 +4,8 @@
 #include <I18n.h>
 #include <cstdlib>
 #include <cmath>
+#include <string>
+#include <vector>
 #include <Arduino.h>
 #include "MappedInputManager.h"
 #include "components/UITheme.h"
@@ -192,14 +194,18 @@ void DiceActivity::drawMagic8(int x, int y, int size, int responseIndex) {
   fillCircle(renderer, x, y, radius - 30, false);
   drawCircle(renderer, x, y, radius - 30, 2, true);
 
+  // tr() token-pastes its argument onto "StrId::", so it only works with a
+  // literal enumerator name, not a runtime-indexed expression - call
+  // I18n::get() directly here instead.
   static constexpr StrId responses[] = {
-    STR_DICE_MAGIC8_0,  STR_DICE_MAGIC8_1,  STR_DICE_MAGIC8_2,  STR_DICE_MAGIC8_3,  STR_DICE_MAGIC8_4,
-    STR_DICE_MAGIC8_5,  STR_DICE_MAGIC8_6,  STR_DICE_MAGIC8_7,  STR_DICE_MAGIC8_8,  STR_DICE_MAGIC8_9,
-    STR_DICE_MAGIC8_10, STR_DICE_MAGIC8_11, STR_DICE_MAGIC8_12, STR_DICE_MAGIC8_13, STR_DICE_MAGIC8_14,
-    STR_DICE_MAGIC8_15, STR_DICE_MAGIC8_16, STR_DICE_MAGIC8_17, STR_DICE_MAGIC8_18, STR_DICE_MAGIC8_19,
+    StrId::STR_DICE_MAGIC8_0,  StrId::STR_DICE_MAGIC8_1,  StrId::STR_DICE_MAGIC8_2,  StrId::STR_DICE_MAGIC8_3,
+    StrId::STR_DICE_MAGIC8_4,  StrId::STR_DICE_MAGIC8_5,  StrId::STR_DICE_MAGIC8_6,  StrId::STR_DICE_MAGIC8_7,
+    StrId::STR_DICE_MAGIC8_8,  StrId::STR_DICE_MAGIC8_9,  StrId::STR_DICE_MAGIC8_10, StrId::STR_DICE_MAGIC8_11,
+    StrId::STR_DICE_MAGIC8_12, StrId::STR_DICE_MAGIC8_13, StrId::STR_DICE_MAGIC8_14, StrId::STR_DICE_MAGIC8_15,
+    StrId::STR_DICE_MAGIC8_16, StrId::STR_DICE_MAGIC8_17, StrId::STR_DICE_MAGIC8_18, StrId::STR_DICE_MAGIC8_19,
   };
 
-  std::string txt = tr(responses[responseIndex]);
+  std::string txt = I18N.get(responses[responseIndex]);
   
   // Basic line breaking rendering
   int yOffset = y - 20; // Start roughly near the top of the inner circle
@@ -268,27 +274,51 @@ void DiceActivity::render(RenderLock&&) {
   int cx = cardX + cardW / 2;
   int cy = cardY + cardH / 2 - 10;
 
+  const char* instructionText = "";
   switch (currentMode) {
     case DiceMode::D6:
       drawD6(cx, cy, 120, lastRollD6);
-      renderer.drawCenteredText(UI_12_FONT_ID, cardY + cardH - 45, tr(STR_DICE_PRESS_ROLL), true, EpdFontFamily::REGULAR);
+      instructionText = tr(STR_DICE_PRESS_ROLL);
       break;
     case DiceMode::Arrow:
       drawArrow(cx, cy, 150, lastRollArrowAngle);
-      renderer.drawCenteredText(UI_12_FONT_ID, cardY + cardH - 45, tr(STR_DICE_PRESS_SPIN), true, EpdFontFamily::REGULAR);
+      instructionText = tr(STR_DICE_PRESS_SPIN);
       break;
     case DiceMode::D20:
       drawD20(cx, cy, 150, lastRollD20);
-      renderer.drawCenteredText(UI_12_FONT_ID, cardY + cardH - 45, tr(STR_DICE_PRESS_ROLL_D20), true, EpdFontFamily::REGULAR);
+      instructionText = tr(STR_DICE_PRESS_ROLL_D20);
       break;
     case DiceMode::Magic8:
       drawMagic8(cx, cy, 150, lastRollMagic8);
-      renderer.drawCenteredText(UI_12_FONT_ID, cardY + cardH - 45, tr(STR_DICE_PRESS_SHAKE), true, EpdFontFamily::REGULAR);
+      instructionText = tr(STR_DICE_PRESS_SHAKE);
       break;
     case DiceMode::Coin:
       drawCoin(cx, cy, 150, lastRollCoin);
-      renderer.drawCenteredText(UI_12_FONT_ID, cardY + cardH - 45, tr(STR_DICE_PRESS_FLIP), true, EpdFontFamily::REGULAR);
+      instructionText = tr(STR_DICE_PRESS_FLIP);
       break;
+  }
+
+  // Some translations don't fit the card width on one line - the string may
+  // carry an embedded '\n' (e.g. long Spanish instructions), which
+  // drawCenteredText doesn't interpret on its own, so split and stack lines
+  // here. Anchored so a single-line string lands exactly where it always did
+  // (cardY + cardH - 45); extra lines grow upward from there.
+  {
+    std::vector<std::string> lines;
+    std::string text = instructionText;
+    size_t start = 0, pos;
+    while ((pos = text.find('\n', start)) != std::string::npos) {
+      lines.push_back(text.substr(start, pos - start));
+      start = pos + 1;
+    }
+    lines.push_back(text.substr(start));
+
+    const int lineHeight = renderer.getLineHeight(UI_12_FONT_ID);
+    const int startY = (cardY + cardH - 45) - (static_cast<int>(lines.size()) - 1) * lineHeight;
+    for (size_t i = 0; i < lines.size(); i++) {
+      renderer.drawCenteredText(UI_12_FONT_ID, startY + static_cast<int>(i) * lineHeight, lines[i].c_str(), true,
+                                EpdFontFamily::REGULAR);
+    }
   }
 
   const auto labels = mappedInput.mapLabels(tr(STR_BACK), tr(STR_SELECT), tr(STR_PREVIOUS_TAB), tr(STR_NEXT_TAB));

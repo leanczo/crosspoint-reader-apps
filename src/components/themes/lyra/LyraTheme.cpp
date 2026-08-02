@@ -56,6 +56,10 @@
 #include "components/icons/calendar24.h"
 #include "components/icons/map.h"
 #include "components/icons/map24.h"
+#include "components/icons/merge.h"
+#include "components/icons/merge24.h"
+#include "components/icons/hackernews.h"
+#include "components/icons/hackernews24.h"
 #include "fontIds.h"
 
 
@@ -113,6 +117,10 @@ const uint8_t* iconForName(UIIcon icon, int size) {
         return Calendar24Icon;
       case UIIcon::Map:
         return Map24Icon;
+      case UIIcon::Game2048:
+        return Merge24Icon;
+      case UIIcon::HackerNews:
+        return Hackernews24Icon;
       default:
         return nullptr;
     }
@@ -164,6 +172,10 @@ const uint8_t* iconForName(UIIcon icon, int size) {
         return CalendarIcon;
       case UIIcon::Map:
         return MapIcon;
+      case UIIcon::Game2048:
+        return MergeIcon;
+      case UIIcon::HackerNews:
+        return HackernewsIcon;
       default:
         return nullptr;
     }

@@ -97,7 +97,7 @@ struct ThemeMetrics {
   int textFieldLineEndOffset;
 };
 
-enum UIIcon { Folder, Text, Image, Book, File, Recent, Settings, Transfer, Library, Wifi, Hotspot, Calculator, Weather, Sudoku, Clock, Wikipedia, Chess, Dice, DuckDuckGo, Rss, TicTacToe, FormulaOne, Snake, Football, Calendar, Map };
+enum UIIcon { Folder, Text, Image, Book, File, Recent, Settings, Transfer, Library, Wifi, Hotspot, Calculator, Weather, Sudoku, Clock, Wikipedia, Chess, Dice, DuckDuckGo, Rss, TicTacToe, FormulaOne, Snake, Football, Calendar, Map, Game2048, HackerNews };
 
 
 enum class KeyboardKeyType { Normal, Shift, Mode, Space, Del, Ok, Disabled };
