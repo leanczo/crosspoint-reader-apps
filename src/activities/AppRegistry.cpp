@@ -11,6 +11,7 @@
 #include "activities/hackernews/HackerNewsActivity.h"
 #include "activities/home/AppFolderActivity.h"
 #include "activities/minesweeper/MinesweeperActivity.h"
+#include "activities/reminders/RemindersListActivity.h"
 #include "activities/simon/SimonActivity.h"
 #include "activities/rss/RssActivity.h"
 #include "activities/snake/SnakeActivity.h"
@@ -216,6 +217,13 @@ AppRegistry::AppRegistry() {
       []() { return tr(STR_CALENDAR_TITLE); }, UIIcon::Calendar,
       [](GfxRenderer &r, MappedInputManager &i) {
         return std::make_unique<CalendarActivity>(r, i);
+      }));
+
+  // Reminders App
+  toolsApps.push_back(std::make_unique<App>(
+      []() { return tr(STR_REMINDERS_TITLE); }, UIIcon::Clock,
+      [](GfxRenderer &r, MappedInputManager &i) {
+        return std::make_unique<RemindersListActivity>(r, i);
       }));
 
   // Clock App

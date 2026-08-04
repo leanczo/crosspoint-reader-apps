@@ -1,5 +1,7 @@
 #pragma once
 
+#include <DateMath.h>
+
 #include <cstdint>
 #include <functional>
 #include <string>
@@ -54,8 +56,16 @@ struct FilePathResult {
   std::string path;
 };
 
+struct ReminderDateResult {
+  int16_t year = 0;
+  uint8_t month = 1;
+  uint8_t day = 1;
+  DateMath::RepeatRule repeat = DateMath::RepeatRule::Never;
+};
+
 using ResultVariant = std::variant<std::monostate, WifiResult, KeyboardResult, MenuResult, ChapterResult, PercentResult,
-                                   PageResult, SyncResult, NetworkModeResult, FootnoteResult, FilePathResult>;
+                                   PageResult, SyncResult, NetworkModeResult, FootnoteResult, FilePathResult,
+                                   ReminderDateResult>;
 
 struct ActivityResult {
   bool isCancelled = false;

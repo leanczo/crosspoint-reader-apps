@@ -12,6 +12,7 @@
 #include "CrossPointState.h"
 #include "OpdsServerStore.h"
 #include "RecentBooksStore.h"
+#include "RemindersStore.h"
 #include "SettingsList.h"
 #include "WifiCredentialStore.h"
 
@@ -392,5 +393,50 @@ bool JsonSettingsIO::loadOpds(OpdsServerStore& store, const char* json, bool* ne
   }
 
   LOG_DBG("OPS", "Loaded %zu OPDS servers from file", store.servers.size());
+  return true;
+}
+
+bool JsonSettingsIO::saveReminders(const RemindersStore& store, const char* path) {
+  JsonDocument doc;
+  doc["version"] = 1;  // format version marker, for future migrations
+
+  JsonArray arr = doc["reminders"].to<JsonArray>();
+  for (const auto& reminder : store.getReminders()) {
+    JsonObject obj = arr.add<JsonObject>();
+    obj["year"] = reminder.year;
+    obj["month"] = reminder.month;
+    obj["day"] = reminder.day;
+    obj["repeat"] = static_cast<uint8_t>(reminder.repeat);
+    obj["description"] = reminder.description;
+  }
+
+  String json;
+  serializeJson(doc, json);
+  return Storage.writeFile(path, json);
+}
+
+bool JsonSettingsIO::loadReminders(RemindersStore& store, const char* json) {
+  JsonDocument doc;
+  auto error = deserializeJson(doc, json);
+  if (error) {
+    LOG_ERR("RMS", "JSON parse error: %s", error.c_str());
+    return false;
+  }
+
+  // doc["version"] is reserved for future migration branching; only version 1 exists today.
+  store.reminders.clear();
+  JsonArray arr = doc["reminders"].as<JsonArray>();
+  for (JsonObject obj : arr) {
+    if (store.reminders.size() >= RemindersStore::MAX_REMINDERS) break;
+    Reminder reminder;
+    reminder.year = obj["year"] | static_cast<int16_t>(1970);
+    reminder.month = obj["month"] | static_cast<uint8_t>(1);
+    reminder.day = obj["day"] | static_cast<uint8_t>(1);
+    reminder.repeat = static_cast<DateMath::RepeatRule>(obj["repeat"] | static_cast<uint8_t>(0));
+    reminder.description = obj["description"] | std::string("");
+    store.reminders.push_back(std::move(reminder));
+  }
+
+  LOG_DBG("RMS", "Loaded %zu reminders from file", store.reminders.size());
   return true;
 }

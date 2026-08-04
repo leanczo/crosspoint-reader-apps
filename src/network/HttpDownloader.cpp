@@ -6,6 +6,7 @@
 #include <base64.h>
 #include <esp_crt_bundle.h>
 #include <esp_http_client.h>
+#include <freertos/semphr.h>
 #include "activities/RenderLock.h"
 
 #include <cstring>
@@ -22,6 +23,30 @@ namespace {
 constexpr int HTTP_RX_BUF = 4096;
 constexpr int HTTP_TX_BUF = 1024;
 constexpr size_t READ_CHUNK = 2048;
+
+// Serializes all HttpDownloader traffic app-wide so at most one TLS connection
+// (mbedTLS's fixed 16KB in + 16KB out buffers) is ever live at a time on this
+// PSRAM-less chip. Bounded wait, not portMAX_DELAY: if a prior download is
+// stuck in a blocking read on a dead socket, later callers must fail fast
+// instead of hanging forever waiting for a lock that may never release.
+SemaphoreHandle_t& httpMutex() {
+  static SemaphoreHandle_t mutex = xSemaphoreCreateMutex();
+  return mutex;
+}
+
+class HttpLock {
+ public:
+  explicit HttpLock(uint32_t timeoutMs) {
+    acquired_ = xSemaphoreTake(httpMutex(), pdMS_TO_TICKS(timeoutMs)) == pdTRUE;
+  }
+  ~HttpLock() {
+    if (acquired_) xSemaphoreGive(httpMutex());
+  }
+  bool acquired() const { return acquired_; }
+
+ private:
+  bool acquired_ = false;
+};
 
 struct Sink {
   std::function<bool(const uint8_t*, size_t)> write;  // returns false to abort the transfer
@@ -74,6 +99,15 @@ HttpDownloader::DownloadError runGet(const std::string& url, const std::string& 
                                      Sink& sink, std::string* outContentType = nullptr, std::string* outFinalUrl = nullptr,
                                      std::string* outErrorDetail = nullptr,
                                      uint32_t timeoutMs = HttpDownloader::kDefaultTimeoutMs) {
+  // Bound the wait by the caller's own timeout plus margin, so a stuck prior
+  // download can't stall this one indefinitely.
+  HttpLock lock(timeoutMs + 5000);
+  if (!lock.acquired()) {
+    LOG_ERR("HTTP", "timed out waiting for another download to finish");
+    if (outErrorDetail) *outErrorDetail = "Another download in progress";
+    return HttpDownloader::HTTP_ERROR;
+  }
+
   std::string currentUrl = url;
   int hop = 0;
   esp_http_client_handle_t client = nullptr;
