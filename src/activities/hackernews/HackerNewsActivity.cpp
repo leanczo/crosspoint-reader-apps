@@ -2,6 +2,7 @@
 
 #include <Arduino.h>
 #include <ArduinoJson.h>
+#include <GfxRenderer.h>
 #include <HalStorage.h>
 #include <I18n.h>
 #include <Logging.h>
@@ -35,6 +36,13 @@ constexpr int kMaxComments = 200;
 // noticed well within cancelFetchTask()'s cooperative-cancel wait window
 // instead of forcing a vTaskDelete() on a task that may hold the storage mutex.
 constexpr uint32_t kListFetchTimeoutMs = 8000;
+
+// openComments()/openLink() run synchronously on the main loop() thread, not
+// backgrounded like runBackgroundFetch() -- there is no task to cancel and no
+// polling of Back while they block, so the default 60s-per-attempt timeout
+// times a 3x retry loop could hold the whole UI unresponsive for minutes on a
+// slow/stalled page with no way to back out. Keep the per-attempt budget short.
+constexpr uint32_t kOpenPageTimeoutMs = 15000;
 
 std::string sanitizeTitleForFilename(const std::string& input) {
   std::string output;
@@ -160,6 +168,14 @@ void HackerNewsActivity::appendDebugLog(const std::string& line) {
 // or leave HalStorage's mutex locked if killed mid-write) if it's genuinely stuck.
 void HackerNewsActivity::cancelFetchTask() {
   if (fetchTaskHandle != nullptr) {
+    // runBackgroundFetch() takes its early-return path once cancelFetch is
+    // observed, which skips setting pendingUpdate -- so loop() never gets a
+    // chance to clear refreshing[] for this tab. Without this, switching
+    // away from a tab mid-fetch leaves its "Refreshing..." banner stuck on
+    // forever the next time that tab is shown.
+    if (fetchingTab >= 0 && fetchingTab < HN_TAB_COUNT) {
+      refreshing[fetchingTab] = false;
+    }
     cancelFetch = true;
     int waitCount = 0;
     // Bound exceeds kListFetchTimeoutMs (8s) so the cooperative cancel is
@@ -188,6 +204,8 @@ void HackerNewsActivity::startFetch(int tab) {
   cancelFetchTask();
   fetchingTab = tab;
   cancelFetch = false;
+  refreshing[tab] = true;
+  refreshFailed[tab] = false;
   Storage.ensureDirectoryExists("/apps");
   Storage.ensureDirectoryExists("/apps/hackernews");
   ensureWifiConnected(
@@ -197,8 +215,11 @@ void HackerNewsActivity::startFetch(int tab) {
       },
       [this]() {
         appendDebugLog("WiFi connect cancelled/failed for tab " + std::to_string(fetchingTab));
+        refreshing[fetchingTab] = false;
         if (!loaded[fetchingTab]) {
           errorMessage[fetchingTab] = tr(STR_HN_WIFI_REQUIRED);
+        } else {
+          refreshFailed[fetchingTab] = true;
         }
         requestUpdate();
       });
@@ -354,8 +375,8 @@ void HackerNewsActivity::openComments() {
     int retries = 3;
     std::string errDetail;
     while (retries > 0) {
-      auto result =
-          HttpDownloader::downloadToFile(url, tmpJsonPath, nullptr, nullptr, "", "", nullptr, nullptr, &errDetail);
+      auto result = HttpDownloader::downloadToFile(url, tmpJsonPath, nullptr, nullptr, "", "", nullptr, nullptr,
+                                                   &errDetail, kOpenPageTimeoutMs);
       if (result == HttpDownloader::OK) {
         downloadOk = true;
         break;
@@ -468,8 +489,8 @@ void HackerNewsActivity::openLink() {
   std::string errDetail;
   while (retries > 0) {
     GUI.drawPopup(renderer, tr(STR_HN_DOWNLOADING));
-    auto result =
-        HttpDownloader::downloadToFile(downloadUrl, tempPath, nullptr, nullptr, "", "", nullptr, nullptr, &errDetail);
+    auto result = HttpDownloader::downloadToFile(downloadUrl, tempPath, nullptr, nullptr, "", "", nullptr, nullptr,
+                                                 &errDetail, kOpenPageTimeoutMs);
     if (result == HttpDownloader::OK) {
       success = true;
       break;
@@ -527,6 +548,7 @@ void HackerNewsActivity::loop() {
     pendingUpdate = false;
     fetchTaskHandle = nullptr;
     int tab = fetchingTab;
+    refreshing[tab] = false;
     if (backgroundFetchSuccess) {
       Storage.remove(cachePath(tab).c_str());
       Storage.rename(tmpPath(tab).c_str(), cachePath(tab).c_str());
@@ -536,6 +558,14 @@ void HackerNewsActivity::loop() {
       }
     } else if (!loaded[tab]) {
       errorMessage[tab] = tr(STR_HN_NO_DATA);
+    } else {
+      // Refresh failed but the previously loaded stories are still good --
+      // keep showing them instead of an error screen, just flag it so
+      // render() can surface a brief "couldn't update" banner instead of
+      // failing completely silently (this is what made "Populares" look
+      // like it never refreshes: a failed background retry left the old
+      // list on screen with no indication anything had gone wrong).
+      refreshFailed[tab] = true;
     }
     requestUpdate();
   }
@@ -687,6 +717,12 @@ void HackerNewsActivity::render(RenderLock&&) {
             return buf;
           },
           true);
+    }
+
+    if (refreshing[tab]) {
+      GUI.drawPopup(renderer, tr(STR_HN_REFRESHING), false);
+    } else if (refreshFailed[tab]) {
+      GUI.drawPopup(renderer, tr(STR_HN_REFRESH_FAILED), false);
     }
 
     const auto labels = mappedInput.mapLabels(tr(STR_BACK), tr(STR_SELECT), tr(STR_DIR_LEFT), tr(STR_DIR_RIGHT));

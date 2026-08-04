@@ -27,6 +27,12 @@ class HackerNewsActivity final : public Activity {
   HNTab currentTab = HNTab::Top;
 
   bool loaded[HN_TAB_COUNT] = {false, false, false, false};
+  // Per-tab in-flight/failed-refresh flags, mirroring FootballActivity /
+  // FormulaOneActivity: without these, a refresh of an already-loaded tab
+  // (e.g. re-fetching Top after a cold-cache load) gives zero visual
+  // feedback and a failure looks identical to nothing having happened.
+  bool refreshing[HN_TAB_COUNT] = {false, false, false, false};
+  bool refreshFailed[HN_TAB_COUNT] = {false, false, false, false};
   std::string errorMessage[HN_TAB_COUNT];
   std::vector<HNStory> stories[HN_TAB_COUNT];
   int selectedRow[HN_TAB_COUNT] = {0, 0, 0, 0};

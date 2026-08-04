@@ -132,21 +132,25 @@ std::string formatEventDateOnly(const std::string& iso) {
   return buf;
 }
 
+// ESPN's status.type.description field comes straight from the API and is
+// always in English regardless of the device's language setting. Translate
+// the fixed set of values it's actually observed to send (verified against
+// the live soccer scoreboard endpoint); anything unrecognized falls back to
+// ESPN's raw text instead of showing nothing.
+std::string translateMatchStatus(const std::string& desc) {
+  if (desc == "Scheduled") return tr(STR_FOOTBALL_STATUS_SCHEDULED);
+  if (desc == "Full Time") return tr(STR_FOOTBALL_STATUS_FULL_TIME);
+  if (desc == "Halftime") return tr(STR_FOOTBALL_STATUS_HALFTIME);
+  if (desc == "In Progress") return tr(STR_FOOTBALL_STATUS_IN_PROGRESS);
+  if (desc == "Postponed") return tr(STR_FOOTBALL_STATUS_POSTPONED);
+  if (desc == "Canceled" || desc == "Cancelled") return tr(STR_FOOTBALL_STATUS_CANCELED);
+  return desc;
+}
+
 void footballFetchTaskFunc(void* param) {
   auto* activity = static_cast<FootballActivity*>(param);
   activity->runBackgroundFetch();
   vTaskDelete(nullptr);
-}
-
-// Small filled banner drawn across the top of the content area so a refresh
-// always gives visible feedback, even when the previous data is still on
-// screen underneath it (manual refresh of an already-loaded tab).
-void drawStatusBanner(GfxRenderer& renderer, int y, const char* text) {
-  const int lineH = renderer.getLineHeight(SMALL_FONT_ID);
-  const int bannerH = lineH + 10;
-  renderer.fillRect(0, y, renderer.getScreenWidth(), bannerH, true);
-  const int textY = y + (bannerH - lineH) / 2;
-  renderer.drawCenteredText(SMALL_FONT_ID, textY, text, false);
 }
 
 }  // namespace
@@ -338,6 +342,26 @@ void FootballActivity::cancelFetchTask() {
     while (fetchTaskHandle != nullptr && waitCount < 1000) {
       delay(10);
       waitCount++;
+    }
+    if (fetchTaskHandle != nullptr) {
+      // Still stuck: it's very likely blocked inside esp_http_client/mbedTLS
+      // (DNS, TCP connect, or TLS handshake/read), not just slow. Killing a
+      // task via vTaskDelete() there skips its C++ destructors and can catch
+      // the heap allocator mid-malloc/free, corrupting it -- surfacing later
+      // as an unrelated abort() (see e.g. the crash right after this got
+      // force-deleted once, on the next activity's unrelated allocation).
+      // Force a WiFi disconnect first -- the same safe unblock mechanism
+      // DownloadWatchdog uses -- so the blocked call returns an error and the
+      // task can exit through its own vTaskDelete(nullptr) in
+      // footballFetchTaskFunc() instead of being killed mid-operation.
+      LOG_ERR("FOOTBALL", "Task stuck after cancel wait, forcing WiFi disconnect to unblock it");
+      appendDebugLog("Task stuck after cancel wait, forcing WiFi disconnect to unblock it");
+      WiFi.disconnect(true);
+      waitCount = 0;
+      while (fetchTaskHandle != nullptr && waitCount < 300) {
+        delay(10);
+        waitCount++;
+      }
     }
     if (fetchTaskHandle != nullptr) {
       LOG_ERR("FOOTBALL", "Task failed to exit gracefully, forcing vTaskDelete!");
@@ -828,7 +852,7 @@ void FootballActivity::drawResultsList(int x, int y, int width, int height) {
     renderer.drawText(UI_10_FONT_ID, boxX + kBoxW + kGap, nameTextY, awayTrunc.c_str(), !selected,
                       EpdFontFamily::REGULAR);
 
-    const std::string subtitle = m.statusDesc + "  " + formatEventDateOnly(m.dateIso);
+    const std::string subtitle = translateMatchStatus(m.statusDesc) + "  " + formatEventDateOnly(m.dateIso);
     const int subTextW = renderer.getTextWidth(SMALL_FONT_ID, subtitle.c_str());
     const int subTextX = x + (width - subTextW) / 2;
     const int subTextY = boxY + kBoxH + kLineGap;
@@ -949,9 +973,9 @@ void FootballActivity::render(RenderLock&&) {
     }
 
     if (refreshing[tab]) {
-      drawStatusBanner(renderer, contentTop, tr(STR_FOOTBALL_REFRESHING));
+      GUI.drawPopup(renderer, tr(STR_FOOTBALL_REFRESHING), false);
     } else if (refreshFailed[tab]) {
-      drawStatusBanner(renderer, contentTop, tr(STR_FOOTBALL_REFRESH_FAILED));
+      GUI.drawPopup(renderer, tr(STR_FOOTBALL_REFRESH_FAILED), false);
     }
 
     const auto labels = mappedInput.mapLabels(tr(STR_BACK), tr(STR_FOOTBALL_REFRESH), tr(STR_DIR_LEFT), tr(STR_DIR_RIGHT));

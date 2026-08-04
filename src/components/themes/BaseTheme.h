@@ -207,7 +207,12 @@ class BaseTheme {
                               const std::function<std::string(int index)>& buttonLabel,
                               const std::function<UIIcon(int index)>& rowIcon,
                               int maxPageItems = 6) const;
-  virtual Rect drawPopup(const GfxRenderer& renderer, const char* message) const;
+  // flush=false skips the internal displayBuffer() call, so callers driving
+  // their own per-frame render() (which already ends with one displayBuffer())
+  // can composite the popup box into that single flush instead of causing an
+  // extra e-ink refresh -- used for persistent "Refreshing..." banners drawn
+  // every frame, as opposed to this function's usual one-off blocking-call use.
+  virtual Rect drawPopup(const GfxRenderer& renderer, const char* message, bool flush = true) const;
   virtual void fillPopupProgress(const GfxRenderer& renderer, const Rect& layout, const int progress) const;
   void drawStatusBar(GfxRenderer& renderer, const float bookProgress, const int currentPage, const int pageCount,
                      std::string title, const int paddingBottom = 0, const int textYOffset = 0,

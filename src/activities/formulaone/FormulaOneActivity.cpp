@@ -31,17 +31,6 @@ void f1FetchTaskFunc(void* param) {
   vTaskDelete(nullptr);
 }
 
-// Small filled banner drawn across the top of the content area so a refresh
-// always gives visible feedback, even when the previous data is still on
-// screen underneath it (manual refresh of an already-loaded tab).
-void drawStatusBanner(GfxRenderer& renderer, int y, const char* text) {
-  const int lineH = renderer.getLineHeight(SMALL_FONT_ID);
-  const int bannerH = lineH + 10;
-  renderer.fillRect(0, y, renderer.getScreenWidth(), bannerH, true);
-  const int textY = y + (bannerH - lineH) / 2;
-  renderer.drawCenteredText(SMALL_FONT_ID, textY, text, false);
-}
-
 // The API returns dates as ISO "YYYY-MM-DD". Every race in a season falls in
 // the same year, so showing it on every row/subheader is just noise — this
 // keeps only day/month, in the DD/MM order used in this app's locale.
@@ -735,9 +724,9 @@ void FormulaOneActivity::render(RenderLock&&) {
   }
 
   if (refreshing[tab]) {
-    drawStatusBanner(renderer, contentTop, tr(STR_F1_REFRESHING));
+    GUI.drawPopup(renderer, tr(STR_F1_REFRESHING), false);
   } else if (refreshFailed[tab]) {
-    drawStatusBanner(renderer, contentTop, tr(STR_F1_REFRESH_FAILED));
+    GUI.drawPopup(renderer, tr(STR_F1_REFRESH_FAILED), false);
   }
 
   const char* confirmHint;

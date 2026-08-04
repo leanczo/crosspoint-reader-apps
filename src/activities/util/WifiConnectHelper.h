@@ -87,7 +87,13 @@ namespace WifiConnectHelper {
     return connectToDefaultWifi();
   }
 
-  inline bool waitForTimeSync(int timeoutMs = 5000) {
+  // 5s was occasionally too tight: if the very first SNTP request packet is
+  // lost right after a fresh WiFi association (common on flaky networks),
+  // the client's retry can land just past that window, and every caller
+  // reads it as "clock sync failed" even though a sync would have succeeded
+  // moments later. Football's Results tab hits this hardest since it skips
+  // the whole fetch on a failed sync (see FootballActivity::runBackgroundFetch).
+  inline bool waitForTimeSync(int timeoutMs = 10000) {
     configTzTime("UTC0", "pool.ntp.org", "time.nist.gov");
     time_t now = time(nullptr);
     struct tm timeinfo;
