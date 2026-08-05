@@ -732,18 +732,17 @@ void RssActivity::loadSubscriptions() {
   subscriptions.clear();
   HalFile f;
   if (!Storage.openFileForRead("RSS", "/apps/rss/subscriptions.txt", f)) {
-    subscriptions.push_back({"https://news.ycombinator.com/rss", ""});
-    subscriptions.push_back({"https://www.reddit.com/r/XTEINK/.rss", ""});
-    subscriptions.push_back({"https://www.reddit.com/.rss", ""});
-    subscriptions.push_back({"https://news.yahoo.com/rss/mostviewed", ""});
-    subscriptions.push_back({"https://feeds.bbci.co.uk/news/rss.xml", ""});
-    subscriptions.push_back({"https://news.google.com/rss?hl=en-US&gl=US&ceid=US:en", ""});
-    subscriptions.push_back({"https://rss.nytimes.com/services/xml/rss/nyt/HomePage.xml", ""});
-    subscriptions.push_back({"https://rss.nytimes.com/services/xml/rss/nyt/DiningandWine.xml", ""});
-    subscriptions.push_back({"https://finance.yahoo.com/news/rssindex", ""});
-    subscriptions.push_back({"https://www.eltribuno.com/rss-new/salta.rss", ""});
-    subscriptions.push_back({"https://psicologiaymente.net/feeds/blog/rss", ""});
-    subscriptions.push_back({"https://rinconpsicologia.com/feed/", ""});
+    
+    subscriptions.push_back({"https://www.reddit.com/r/XTEINK/.rss", "XTEINK"});
+    subscriptions.push_back({"https://www.reddit.com/.rss", "Reddit"});
+    subscriptions.push_back({"https://es.motorsport.com/rss/f1/news/", "Motorsport F1"});
+    subscriptions.push_back({"http://www.genbeta.com/index.xml", "Genbeta"});
+    subscriptions.push_back({"https://www.notion.so/releases/rss.xml", "Notion Releases"});
+    subscriptions.push_back({"http://tonsky.me/blog/atom.xml", "Tonsky Blog"});
+    subscriptions.push_back({"https://tvymanga2.com/feed/", "Mangas"});
+    subscriptions.push_back({"https://www.eltribuno.com/rss-new/salta.rss", "El Tribuno Salta"});
+    subscriptions.push_back({"https://psicologiaymente.net/feeds/blog/rss", "Psicología y Mente"});
+    subscriptions.push_back({"https://rinconpsicologia.com/feed/", "El Rincón de la Psicología"});
 
     saveSubscriptions();
     return;
@@ -1653,22 +1652,30 @@ void RssActivity::render(RenderLock&&) {
         bool isSelected = (idx == selectedItemIndex);
         renderer.drawRoundedRect(cellX, cellY, cellW, cellH, isSelected ? 3 : 1, 8, true);
 
-        std::string metadata = item.feedName;
+        // The source is already shown once in the screen header (every card
+        // here is from the same feed), so repeating it per card added no
+        // information. The relative time doesn't get its own line either
+        // (that left an awkward near-empty row) -- it sits beside the
+        // title's first line instead, with the title's wrap width narrowed
+        // by a fixed reserve so it never collides. Title (bold, up to 2
+        // lines) + description (regular, up to 2 lines) are the two pieces
+        // of text that actually vary per article, so both get real space.
         long long ts = atoll(item.timestamp.c_str());
         std::string relativeTime = timeAgo(ts);
-        if (!relativeTime.empty()) {
-          metadata += " • " + relativeTime;
-        }
         int textY = cellY + 12;
-        renderer.drawText(UI_10_FONT_ID, cellX + 12, textY, metadata.c_str(), true, EpdFontFamily::BOLD);
-        textY += lineHeight + sectionGap;
 
-        auto titleLines =
-            renderer.wrappedText(UI_10_FONT_ID, item.title.c_str(), cellW - 24, 2, EpdFontFamily::REGULAR);
+        constexpr int kTimeReserve = 70;  // room for the relative-time label beside the title
+        auto titleLines = renderer.wrappedText(UI_10_FONT_ID, item.title.c_str(), cellW - 24 - kTimeReserve, 2,
+                                               EpdFontFamily::BOLD);
         for (size_t l = 0; l < titleLines.size() && l < 2 && textY + lineHeight <= cellBottom; l++) {
           renderer.drawText(UI_10_FONT_ID, cellX + 12, textY, titleLines[l].c_str(), true,
-                            EpdFontFamily::REGULAR);
+                            EpdFontFamily::BOLD);
           textY += lineHeight;
+        }
+        if (!relativeTime.empty()) {
+          const int timeWidth = renderer.getTextWidth(UI_10_FONT_ID, relativeTime.c_str(), EpdFontFamily::REGULAR);
+          renderer.drawText(UI_10_FONT_ID, cellX + cellW - 12 - timeWidth, cellY + 12, relativeTime.c_str(), true,
+                            EpdFontFamily::REGULAR);
         }
         textY += sectionGap;
 
@@ -1745,7 +1752,7 @@ void RssActivity::render(RenderLock&&) {
                         lines[lineIdx].c_str(), true, EpdFontFamily::REGULAR);
     }
 
-    const auto labels = mappedInput.mapLabels(tr(STR_BACK), tr(STR_SELECT), "-", "+");
+    const auto labels = mappedInput.mapLabels(tr(STR_BACK), tr(STR_RSS_MENU), "-", "+");
     GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
   } else if (state == RssState::PostActionMenu) {
     GUI.drawHeader(renderer, Rect{0, metrics.topPadding, pageWidth, metrics.headerHeight}, "RSS Post");

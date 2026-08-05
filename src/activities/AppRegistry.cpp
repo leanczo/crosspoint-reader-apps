@@ -11,6 +11,7 @@
 #include "activities/hackernews/HackerNewsActivity.h"
 #include "activities/home/AppFolderActivity.h"
 #include "activities/minesweeper/MinesweeperActivity.h"
+#include "activities/onthisday/OnThisDayActivity.h"
 #include "activities/reminders/RemindersListActivity.h"
 #include "activities/simon/SimonActivity.h"
 #include "activities/rss/RssActivity.h"
@@ -187,6 +188,13 @@ AppRegistry::AppRegistry() {
       []() { return tr(STR_FOOTBALL_TITLE); }, UIIcon::Football,
       [](GfxRenderer &r, MappedInputManager &i) {
         return std::make_unique<FootballActivity>(r, i);
+      }));
+
+  // On This Day App
+  entertainmentApps.push_back(std::make_unique<App>(
+      []() { return tr(STR_OTD_TITLE); }, UIIcon::Wikipedia,
+      [](GfxRenderer &r, MappedInputManager &i) {
+        return std::make_unique<OnThisDayActivity>(r, i);
       }));
 
   // --- Tools ---
