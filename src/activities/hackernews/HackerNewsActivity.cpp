@@ -208,6 +208,27 @@ void HackerNewsActivity::startFetch(int tab) {
   refreshFailed[tab] = false;
   Storage.ensureDirectoryExists("/apps");
   Storage.ensureDirectoryExists("/apps/hackernews");
+
+  // Free every resident tab's vector before the TLS handshake: mbedTLS needs
+  // a contiguous ~32KB (16KB in + 16KB out) buffer on this PSRAM-less chip,
+  // and up to HN_TAB_COUNT previously-visited tabs' story lists sitting in
+  // RAM at once is enough to fragment that away (this is why only the first
+  // tab visited, usually Top, ever reliably fetches). Non-active tabs just
+  // get marked unloaded; the existing tab-switch guard below already
+  // lazily reloads them from their own SD cache (or re-fetches) the next
+  // time the user tabs back to one.
+  for (int t = 0; t < HN_TAB_COUNT; t++) {
+    if (t == tab) continue;
+    if (!stories[t].empty()) {
+      stories[t].clear();
+      stories[t].shrink_to_fit();
+    }
+    loaded[t] = false;
+  }
+  stories[tab].clear();
+  stories[tab].shrink_to_fit();
+  state = HNState::Loading;
+
   ensureWifiConnected(
       [this]() {
         backgroundFetchSuccess = false;
@@ -216,11 +237,15 @@ void HackerNewsActivity::startFetch(int tab) {
       [this]() {
         appendDebugLog("WiFi connect cancelled/failed for tab " + std::to_string(fetchingTab));
         refreshing[fetchingTab] = false;
+        // startFetch() already cleared this tab's vector above; restore it
+        // from disk since the fetch never actually started.
+        loadCacheFromSd(fetchingTab);
         if (!loaded[fetchingTab]) {
           errorMessage[fetchingTab] = tr(STR_HN_WIFI_REQUIRED);
         } else {
           refreshFailed[fetchingTab] = true;
         }
+        state = HNState::CategoryList;
         requestUpdate();
       });
   requestUpdate();
@@ -552,13 +577,15 @@ void HackerNewsActivity::loop() {
     if (backgroundFetchSuccess) {
       Storage.remove(cachePath(tab).c_str());
       Storage.rename(tmpPath(tab).c_str(), cachePath(tab).c_str());
-      loadCacheFromSd(tab);
-      if (!loaded[tab] && errorMessage[tab].empty()) {
-        errorMessage[tab] = tr(STR_HN_NO_DATA);
-      }
-    } else if (!loaded[tab]) {
-      errorMessage[tab] = tr(STR_HN_NO_DATA);
-    } else {
+    }
+    // startFetch() cleared this tab's vector before the fetch started, so the
+    // reload must happen unconditionally — on failure this is the only way
+    // to get the old (still-good, untouched-on-disk) data back, since a
+    // failed fetch never touches cachePath().
+    loadCacheFromSd(tab);
+    if (!loaded[tab]) {
+      if (errorMessage[tab].empty()) errorMessage[tab] = tr(STR_HN_NO_DATA);
+    } else if (!backgroundFetchSuccess) {
       // Refresh failed but the previously loaded stories are still good --
       // keep showing them instead of an error screen, just flag it so
       // render() can surface a brief "couldn't update" banner instead of
@@ -567,10 +594,22 @@ void HackerNewsActivity::loop() {
       // list on screen with no indication anything had gone wrong).
       refreshFailed[tab] = true;
     }
+    if (state == HNState::Loading) state = HNState::CategoryList;
     requestUpdate();
   }
 
   using Button = MappedInputManager::Button;
+
+  if (state == HNState::Loading) {
+    if (mappedInput.wasReleased(Button::Back)) {
+      // cancelFetchTask() already clears refreshing[currentTab] for us.
+      cancelFetchTask();
+      loadCacheFromSd(static_cast<int>(currentTab));
+      state = HNState::CategoryList;
+      requestUpdate();
+    }
+    return;
+  }
 
   if (state == HNState::StoryDetail) {
     if (mappedInput.wasReleased(Button::Back)) {
@@ -673,6 +712,26 @@ void HackerNewsActivity::render(RenderLock&&) {
 
     const auto labels = mappedInput.mapLabels(tr(STR_BACK), tr(STR_SELECT), nullptr, nullptr);
     GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
+  } else if (state == HNState::Loading) {
+    GUI.drawHeader(renderer, Rect{0, metrics.topPadding, pageWidth, metrics.headerHeight}, tr(STR_HN_TITLE));
+
+    const int tabBarY = metrics.topPadding + metrics.headerHeight;
+    const int tab = static_cast<int>(currentTab);
+    std::vector<TabInfo> tabs = {
+        {tr(STR_HN_TAB_TOP), currentTab == HNTab::Top},
+        {tr(STR_HN_TAB_NEW), currentTab == HNTab::New},
+        {tr(STR_HN_TAB_ASK), currentTab == HNTab::Ask},
+        {tr(STR_HN_TAB_SHOW), currentTab == HNTab::Show},
+    };
+    GUI.drawTabBar(renderer, Rect{0, tabBarY, pageWidth, metrics.tabBarHeight}, tabs, true);
+
+    const int contentTop = tabBarY + metrics.tabBarHeight + metrics.verticalSpacing;
+    const int listBottom = pageHeight - metrics.buttonHintsHeight - metrics.verticalSpacing;
+    const int textY = contentTop + (listBottom - contentTop) / 2 - renderer.getLineHeight(UI_12_FONT_ID) / 2;
+    renderer.drawCenteredText(UI_12_FONT_ID, textY, loaded[tab] ? tr(STR_HN_REFRESHING) : tr(STR_HN_LOADING));
+
+    const auto labels = mappedInput.mapLabels(tr(STR_BACK), nullptr, nullptr, nullptr);
+    GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
   } else {
     GUI.drawHeader(renderer, Rect{0, metrics.topPadding, pageWidth, metrics.headerHeight}, tr(STR_HN_TITLE));
 
@@ -689,7 +748,7 @@ void HackerNewsActivity::render(RenderLock&&) {
     const int tab = static_cast<int>(currentTab);
     const int listBottom = pageHeight - metrics.buttonHintsHeight - metrics.verticalSpacing;
 
-    if (!loaded[tab] && stories[tab].empty()) {
+    if (!loaded[tab]) {
       const int textY = contentTop + (listBottom - contentTop) / 2 - renderer.getLineHeight(UI_12_FONT_ID) / 2;
       const char* msg = !errorMessage[tab].empty() ? errorMessage[tab].c_str() : tr(STR_HN_LOADING);
       renderer.drawCenteredText(UI_12_FONT_ID, textY, msg);
@@ -719,9 +778,9 @@ void HackerNewsActivity::render(RenderLock&&) {
           true);
     }
 
-    if (refreshing[tab]) {
-      GUI.drawPopup(renderer, tr(STR_HN_REFRESHING), false);
-    } else if (refreshFailed[tab]) {
+    // refreshing[tab] is never true here — a fetch in progress means
+    // state == HNState::Loading, handled in its own branch above.
+    if (refreshFailed[tab]) {
       GUI.drawPopup(renderer, tr(STR_HN_REFRESH_FAILED), false);
     }
 

@@ -715,22 +715,35 @@ void RssActivity::ensureDirectoriesExist() {
   Storage.ensureDirectoryExists("/apps/rss/content");
 }
 
+namespace {
+// Parses one subscriptions.txt line into a subscription. The format is
+// "<url>\t<customName>"; a bare URL with no tab (the old, pre-rename format)
+// still parses fine with an empty customName, so existing files load
+// unchanged. A literal tab byte can't appear in a valid URL, making it a
+// safe delimiter.
+RssSubscription parseSubscriptionLine(const std::string& line) {
+  size_t tabPos = line.find('\t');
+  if (tabPos == std::string::npos) return {line, ""};
+  return {line.substr(0, tabPos), line.substr(tabPos + 1)};
+}
+}  // namespace
+
 void RssActivity::loadSubscriptions() {
   subscriptions.clear();
   HalFile f;
   if (!Storage.openFileForRead("RSS", "/apps/rss/subscriptions.txt", f)) {
-    subscriptions.push_back("https://news.ycombinator.com/rss");
-    subscriptions.push_back("https://www.reddit.com/r/XTEINK/.rss");
-    subscriptions.push_back("https://www.reddit.com/.rss");
-    subscriptions.push_back("https://news.yahoo.com/rss/mostviewed");
-    subscriptions.push_back("https://feeds.bbci.co.uk/news/rss.xml");
-    subscriptions.push_back("https://news.google.com/rss?hl=en-US&gl=US&ceid=US:en");
-    subscriptions.push_back("https://rss.nytimes.com/services/xml/rss/nyt/HomePage.xml");
-    subscriptions.push_back("https://rss.nytimes.com/services/xml/rss/nyt/DiningandWine.xml");
-    subscriptions.push_back("https://finance.yahoo.com/news/rssindex");
-    subscriptions.push_back("https://www.eltribuno.com/rss-new/salta.rss");
-    subscriptions.push_back("https://psicologiaymente.net/feeds/blog/rss");
-    subscriptions.push_back("https://rinconpsicologia.com/feed/");
+    subscriptions.push_back({"https://news.ycombinator.com/rss", ""});
+    subscriptions.push_back({"https://www.reddit.com/r/XTEINK/.rss", ""});
+    subscriptions.push_back({"https://www.reddit.com/.rss", ""});
+    subscriptions.push_back({"https://news.yahoo.com/rss/mostviewed", ""});
+    subscriptions.push_back({"https://feeds.bbci.co.uk/news/rss.xml", ""});
+    subscriptions.push_back({"https://news.google.com/rss?hl=en-US&gl=US&ceid=US:en", ""});
+    subscriptions.push_back({"https://rss.nytimes.com/services/xml/rss/nyt/HomePage.xml", ""});
+    subscriptions.push_back({"https://rss.nytimes.com/services/xml/rss/nyt/DiningandWine.xml", ""});
+    subscriptions.push_back({"https://finance.yahoo.com/news/rssindex", ""});
+    subscriptions.push_back({"https://www.eltribuno.com/rss-new/salta.rss", ""});
+    subscriptions.push_back({"https://psicologiaymente.net/feeds/blog/rss", ""});
+    subscriptions.push_back({"https://rinconpsicologia.com/feed/", ""});
 
     saveSubscriptions();
     return;
@@ -744,7 +757,7 @@ void RssActivity::loadSubscriptions() {
         currentLine.pop_back();
       }
       if (!currentLine.empty()) {
-        subscriptions.push_back(currentLine);
+        subscriptions.push_back(parseSubscriptionLine(currentLine));
       }
       currentLine = "";
     } else {
@@ -752,7 +765,7 @@ void RssActivity::loadSubscriptions() {
     }
   }
   if (!currentLine.empty()) {
-    subscriptions.push_back(currentLine);
+    subscriptions.push_back(parseSubscriptionLine(currentLine));
   }
   f.close();
 }
@@ -761,11 +774,18 @@ void RssActivity::saveSubscriptions() {
   HalFile f;
   if (Storage.openFileForWrite("RSS", "/apps/rss/subscriptions.txt", f)) {
     for (const auto& sub : subscriptions) {
-      std::string line = sub + "\n";
+      std::string line = sub.url + "\t" + sub.customName + "\n";
       f.write(line.c_str(), line.length());
     }
     f.close();
   }
+}
+
+std::string RssActivity::displayNameForUrl(const std::string& url) const {
+  for (const auto& sub : subscriptions) {
+    if (sub.url == url) return !sub.customName.empty() ? sub.customName : getFriendlyFeedName(url);
+  }
+  return getFriendlyFeedName(url);
 }
 
 void RssActivity::loadArticleFontSize() {
@@ -945,6 +965,7 @@ void RssActivity::runBackgroundFetch() {
       Storage.remove(xmlPath.c_str());
 
       debugLog += "Fetching: " + url + "\n";
+      debugLog += "Free heap before fetch: " + std::to_string(ESP.getFreeHeap()) + " bytes\n";
 
       int fetchRetries = 3;
       bool fetchSuccess = false;
@@ -1271,8 +1292,15 @@ void RssActivity::loop() {
             auto keyboardResult = std::get_if<KeyboardResult>(&result.data);
             if (keyboardResult && !keyboardResult->text.empty() && keyboardResult->text != "https://") {
               std::string url = keyboardResult->text;
-              if (std::find(subscriptions.begin(), subscriptions.end(), url) == subscriptions.end()) {
-                subscriptions.push_back(url);
+              bool alreadySubscribed = false;
+              for (const auto& sub : subscriptions) {
+                if (sub.url == url) {
+                  alreadySubscribed = true;
+                  break;
+                }
+              }
+              if (!alreadySubscribed) {
+                subscriptions.push_back({url, ""});
                 saveSubscriptions();
               }
               activeFeed = url;
@@ -1317,7 +1345,7 @@ void RssActivity::loop() {
         if (selectedSubIndex == totalItems - 1) {
           // Add URL
         } else {
-          activeFeed = subscriptions[selectedSubIndex];
+          activeFeed = subscriptions[selectedSubIndex].url;
         }
 
         bool hasCache = loadOfflineFeeds();
@@ -1346,58 +1374,117 @@ void RssActivity::loop() {
         }
       }
     } else if (mappedInput.wasReleased(MappedInputManager::Button::Right)) {
-      // Right button to delete RSS subscription
+      // Right button opens the feed action menu (Edit Title / Edit URL /
+      // Delete Feed) instead of deleting directly, so a single stray press
+      // can no longer remove a subscription.
       if (selectedSubIndex >= 0 && selectedSubIndex < totalItems - 1) {
-        std::string subToDelete = subscriptions[selectedSubIndex];
-        auto handler = [this, subToDelete](const ActivityResult& res) {
-          if (!res.isCancelled) {
-            auto it = std::find(subscriptions.begin(), subscriptions.end(), subToDelete);
-            if (it != subscriptions.end()) {
-              subscriptions.erase(it);
+        feedActionMenuIndex = 0;
+        state = RssState::FeedActionMenu;
+        requestUpdate();
+      }
+    }
+  } else if (state == RssState::FeedActionMenu) {
+    constexpr int kFeedActionCount = 3;  // Edit Title, Edit URL, Delete Feed
+    if (mappedInput.wasReleased(MappedInputManager::Button::Back)) {
+      state = RssState::FeedSelection;
+      requestUpdate();
+    } else if (mappedInput.wasReleased(MappedInputManager::Button::Up)) {
+      feedActionMenuIndex = (feedActionMenuIndex - 1 + kFeedActionCount) % kFeedActionCount;
+      requestUpdate();
+    } else if (mappedInput.wasReleased(MappedInputManager::Button::Down)) {
+      feedActionMenuIndex = (feedActionMenuIndex + 1) % kFeedActionCount;
+      requestUpdate();
+    } else if (mappedInput.wasReleased(MappedInputManager::Button::Confirm)) {
+      if (feedActionMenuIndex == 0) {
+        // Edit Title
+        const std::string currentUrl = subscriptions[selectedSubIndex].url;
+        const std::string currentName = displayNameForUrl(currentUrl);
+        auto keyboard =
+            std::make_unique<KeyboardEntryActivity>(renderer, mappedInput, tr(STR_RSS_EDIT_TITLE), currentName, 60);
+        startActivityForResult(std::move(keyboard), [this](const ActivityResult& result) {
+          if (!result.isCancelled) {
+            auto keyboardResult = std::get_if<KeyboardResult>(&result.data);
+            if (keyboardResult && selectedSubIndex >= 0 &&
+                selectedSubIndex < static_cast<int>(subscriptions.size()) && !keyboardResult->text.empty()) {
+              const std::string autoName = getFriendlyFeedName(subscriptions[selectedSubIndex].url);
+              subscriptions[selectedSubIndex].customName = (keyboardResult->text == autoName) ? "" : keyboardResult->text;
               saveSubscriptions();
-              selectedSubIndex = 0;
-              std::string filename = getSanitizedUrlFilename(subToDelete);
-              std::string filepath = "/apps/rss/" + filename + ".md";
-              Storage.remove(filepath.c_str());
             }
           }
+          state = RssState::FeedSelection;
           requestUpdate();
-        };
-        startActivityForResult(
-            std::make_unique<ConfirmationActivity>(renderer, mappedInput, "Unsubscribe?", subToDelete), handler);
-      }
-    } else if (mappedInput.wasReleased(MappedInputManager::Button::Left)) {
-      // Left button to edit the URL of an existing RSS subscription
-      if (selectedSubIndex >= 0 && selectedSubIndex < totalItems - 1) {
-        std::string oldUrl = subscriptions[selectedSubIndex];
+        });
+      } else if (feedActionMenuIndex == 1) {
+        // Edit URL
+        std::string oldUrl = subscriptions[selectedSubIndex].url;
         auto keyboard = std::make_unique<KeyboardEntryActivity>(renderer, mappedInput, "Edit RSS URL", oldUrl, 150);
         startActivityForResult(std::move(keyboard), [this, oldUrl](const ActivityResult& result) {
           if (!result.isCancelled) {
             auto keyboardResult = std::get_if<KeyboardResult>(&result.data);
-            if (keyboardResult && !keyboardResult->text.empty() && keyboardResult->text != oldUrl &&
-                std::find(subscriptions.begin(), subscriptions.end(), keyboardResult->text) == subscriptions.end()) {
-              auto it = std::find(subscriptions.begin(), subscriptions.end(), oldUrl);
-              if (it != subscriptions.end()) {
-                *it = keyboardResult->text;
-                saveSubscriptions();
-                // Old cache is keyed off the old URL's filename hash; drop it so the
-                // edited URL fetches fresh content under its own cache file.
-                std::string oldFilename = getSanitizedUrlFilename(oldUrl);
-                Storage.remove(("/apps/rss/" + oldFilename + ".md").c_str());
-                if (activeFeed == oldUrl) {
-                  activeFeed = keyboardResult->text;
+            bool urlTaken = false;
+            if (keyboardResult) {
+              for (const auto& sub : subscriptions) {
+                if (sub.url == keyboardResult->text) {
+                  urlTaken = true;
+                  break;
+                }
+              }
+            }
+            if (keyboardResult && !keyboardResult->text.empty() && keyboardResult->text != oldUrl && !urlTaken) {
+              for (auto& sub : subscriptions) {
+                if (sub.url == oldUrl) {
+                  sub.url = keyboardResult->text;
+                  saveSubscriptions();
+                  // Old cache is keyed off the old URL's filename hash; drop it so the
+                  // edited URL fetches fresh content under its own cache file.
+                  std::string oldFilename = getSanitizedUrlFilename(oldUrl);
+                  Storage.remove(("/apps/rss/" + oldFilename + ".md").c_str());
+                  if (activeFeed == oldUrl) {
+                    activeFeed = keyboardResult->text;
+                  }
+                  break;
                 }
               }
             }
           }
+          state = RssState::FeedSelection;
           requestUpdate();
         });
+      } else {
+        // Delete Feed
+        std::string subToDelete = subscriptions[selectedSubIndex].url;
+        auto handler = [this, subToDelete](const ActivityResult& res) {
+          if (!res.isCancelled) {
+            for (size_t i = 0; i < subscriptions.size(); i++) {
+              if (subscriptions[i].url == subToDelete) {
+                subscriptions.erase(subscriptions.begin() + i);
+                break;
+              }
+            }
+            saveSubscriptions();
+            selectedSubIndex = 0;
+            std::string filename = getSanitizedUrlFilename(subToDelete);
+            std::string filepath = "/apps/rss/" + filename + ".md";
+            Storage.remove(filepath.c_str());
+          }
+          state = RssState::FeedSelection;
+          requestUpdate();
+        };
+        startActivityForResult(
+            std::make_unique<ConfirmationActivity>(renderer, mappedInput, "Unsubscribe?", subToDelete), handler);
       }
     }
   } else if (state == RssState::FeedList) {
     if (mappedInput.wasReleased(MappedInputManager::Button::Right)) {
       isRefreshing = true;
       state = RssState::Loading;
+      // Loading screen doesn't render allItems, so free it before the TLS
+      // handshake: mbedTLS needs a contiguous 32KB (16KB in + 16KB out) on
+      // this PSRAM-less chip, and a cached list of up to 25 items (title +
+      // description + link per item) is enough to fragment that away, which
+      // surfaces as ESP_ERR_HTTP_CONNECT / "Read error" on longer feeds.
+      allItems.clear();
+      allItems.shrink_to_fit();
       requestUpdate();
       ensureWifiConnected(
           [this]() {
@@ -1523,7 +1610,7 @@ void RssActivity::render(RenderLock&&) {
 
   std::string headerTitle = "RSS Feed";
   if (state == RssState::FeedList || state == RssState::Loading) {
-    headerTitle = getFriendlyFeedName(activeFeed);
+    headerTitle = displayNameForUrl(activeFeed);
   }
 
   GUI.drawHeader(renderer, Rect{0, metrics.topPadding, pageWidth, metrics.headerHeight}, headerTitle.c_str());
@@ -1673,6 +1760,27 @@ void RssActivity::render(RenderLock&&) {
 
     const auto labels = mappedInput.mapLabels(tr(STR_BACK), tr(STR_SELECT), nullptr, nullptr);
     GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
+  } else if (state == RssState::FeedActionMenu) {
+    const std::string feedTitle =
+        (selectedSubIndex >= 0 && selectedSubIndex < static_cast<int>(subscriptions.size()))
+            ? displayNameForUrl(subscriptions[selectedSubIndex].url)
+            : "RSS Feed";
+    GUI.drawHeader(renderer, Rect{0, metrics.topPadding, pageWidth, metrics.headerHeight}, feedTitle.c_str());
+
+    const int menuTop = contentTop;
+    const int menuBottom = contentBottom;
+    constexpr int kFeedActionCount = 3;
+    GUI.drawButtonMenu(
+        renderer, Rect{0, menuTop, pageWidth, menuBottom - menuTop}, kFeedActionCount, feedActionMenuIndex,
+        [](int index) -> std::string {
+          if (index == 0) return tr(STR_RSS_EDIT_TITLE);
+          if (index == 1) return tr(STR_RSS_MENU_EDIT_URL);
+          return tr(STR_RSS_MENU_DELETE_FEED);
+        },
+        [](int) { return UIIcon::Library; }, 6);
+
+    const auto labels = mappedInput.mapLabels(tr(STR_BACK), tr(STR_SELECT), nullptr, nullptr);
+    GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
   } else if (state == RssState::FeedSelection) {
     GUI.drawHeader(renderer, Rect{0, metrics.topPadding, pageWidth, metrics.headerHeight}, "RSS Feed");
 
@@ -1686,8 +1794,8 @@ void RssActivity::render(RenderLock&&) {
         totalItems, selectedSubIndex,
         [this, totalItems](int index) {
           if (index == totalItems - 1) return std::string("[+ Add RSS URL]");
-          std::string url = subscriptions[index];
-          return getFriendlyFeedName(url);
+          const auto& sub = subscriptions[index];
+          return !sub.customName.empty() ? sub.customName : getFriendlyFeedName(sub.url);
         },
         [this, totalItems](int index) {
           if (index == totalItems - 1) return UIIcon::File;
@@ -1695,14 +1803,12 @@ void RssActivity::render(RenderLock&&) {
         },
         9);
 
-    const char* leftAction = nullptr;
     const char* rightAction = nullptr;
     if (selectedSubIndex >= 0 && selectedSubIndex < totalItems - 1) {
-      leftAction = "Edit";
-      rightAction = "Delete";
+      rightAction = tr(STR_RSS_MENU);
     }
 
-    const auto labels = mappedInput.mapLabels(tr(STR_BACK), tr(STR_SELECT), leftAction, rightAction);
+    const auto labels = mappedInput.mapLabels(tr(STR_BACK), tr(STR_SELECT), nullptr, rightAction);
     GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
   }
 

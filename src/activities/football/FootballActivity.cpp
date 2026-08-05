@@ -386,6 +386,33 @@ void FootballActivity::startFetch(int tab) {
   refreshFailed[tab] = false;
   Storage.ensureDirectoryExists("/apps");
   Storage.ensureDirectoryExists("/apps/football");
+
+  // Free both tabs' vectors before the TLS handshake: mbedTLS needs a
+  // contiguous ~32KB (16KB in + 16KB out) buffer on this PSRAM-less chip, and
+  // a resident results/standings list is enough to fragment that away,
+  // surfacing as ESP_ERR_HTTP_CONNECT / "Read error". The active tab is
+  // reloaded from the (untouched-on-failure) SD cache once the fetch
+  // completes below; the other, currently off-screen tab just gets marked
+  // unloaded so it lazily reloads from its own cache next time it's viewed.
+  const int otherTab = 1 - tab;
+  if (otherTab == static_cast<int>(FootballTab::Results)) {
+    resultsMatches.clear();
+    resultsMatches.shrink_to_fit();
+  } else {
+    standingsGroups.clear();
+    standingsGroups.shrink_to_fit();
+  }
+  loaded[otherTab] = false;
+  errorMessage[otherTab].clear();
+
+  if (tab == static_cast<int>(FootballTab::Results)) {
+    resultsMatches.clear();
+    resultsMatches.shrink_to_fit();
+  } else {
+    standingsGroups.clear();
+    standingsGroups.shrink_to_fit();
+  }
+
   ensureWifiConnected(
       [this]() {
         backgroundFetchSuccess = false;
@@ -397,6 +424,9 @@ void FootballActivity::startFetch(int tab) {
         LOG_ERR("FOOTBALL", "%s", buf);
         appendDebugLog(buf);
         refreshing[fetchingTab] = false;
+        // startFetch() already cleared this tab's vector above; restore it
+        // from disk since the fetch never actually started.
+        loadCacheFromSd(fetchingTab);
         if (!loaded[fetchingTab]) {
           errorMessage[fetchingTab] = tr(STR_FOOTBALL_WIFI_REQUIRED);
         } else {
@@ -602,13 +632,15 @@ void FootballActivity::loop() {
     if (backgroundFetchSuccess) {
       Storage.remove(cachePath(tab).c_str());
       Storage.rename(tmpPath(tab).c_str(), cachePath(tab).c_str());
-      loadCacheFromSd(tab);
-      if (!loaded[tab] && errorMessage[tab].empty()) {
-        errorMessage[tab] = tr(STR_FOOTBALL_NO_DATA);
-      }
-    } else if (!loaded[tab]) {
-      errorMessage[tab] = tr(STR_FOOTBALL_NO_DATA);
-    } else {
+    }
+    // startFetch() cleared this tab's vector before the fetch started, so the
+    // reload must happen unconditionally — on failure this is the only way
+    // to get the old (still-good, untouched-on-disk) data back, since a
+    // failed fetch never touches cachePath().
+    loadCacheFromSd(tab);
+    if (!loaded[tab]) {
+      if (errorMessage[tab].empty()) errorMessage[tab] = tr(STR_FOOTBALL_NO_DATA);
+    } else if (!backgroundFetchSuccess) {
       // Refresh failed but we still have good cached data from before —
       // keep showing it instead of replacing it with an error screen, but
       // flag it so render() can surface a brief "couldn't update" banner
@@ -953,7 +985,10 @@ void FootballActivity::render(RenderLock&&) {
     const int listBottom = pageHeight - metrics.buttonHintsHeight - metrics.verticalSpacing;
     const Rect listRect{0, contentTop, pageWidth, listBottom - contentTop};
 
-    if (!loaded[tab] && !refreshing[tab]) {
+    if (refreshing[tab]) {
+      const int textY = contentTop + (listBottom - contentTop) / 2 - renderer.getLineHeight(UI_12_FONT_ID) / 2;
+      renderer.drawCenteredText(UI_12_FONT_ID, textY, tr(STR_FOOTBALL_REFRESHING));
+    } else if (!loaded[tab]) {
       const int textY = contentTop + (listBottom - contentTop) / 2 - renderer.getLineHeight(UI_12_FONT_ID) / 2;
       const char* msg = !errorMessage[tab].empty() ? errorMessage[tab].c_str() : tr(STR_FOOTBALL_LOADING);
       renderer.drawCenteredText(UI_12_FONT_ID, textY, msg);
@@ -972,9 +1007,10 @@ void FootballActivity::render(RenderLock&&) {
       drawResultsList(listRect.x, listRect.y, listRect.width, listRect.height);
     }
 
-    if (refreshing[tab]) {
-      GUI.drawPopup(renderer, tr(STR_FOOTBALL_REFRESHING), false);
-    } else if (refreshFailed[tab]) {
+    // refreshing[tab] is handled above (it now hides the list entirely
+    // instead of overlaying a popup on top of it), so only the
+    // refresh-failed banner can still appear here.
+    if (refreshFailed[tab]) {
       GUI.drawPopup(renderer, tr(STR_FOOTBALL_REFRESH_FAILED), false);
     }
 
